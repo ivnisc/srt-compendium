@@ -1,0 +1,8 @@
+.DS_Store
+/build/
+/results/
+/assets/*.ts
+*.log
+__pycache__/
+*.pyc
+/experiments/linux_capabilities.env
