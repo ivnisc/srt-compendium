@@ -1,4 +1,4 @@
-#include "kalman.hpp"
+#include "kalman.h"
 
 #include <cassert>
 #include <cmath>
