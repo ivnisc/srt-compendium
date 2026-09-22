@@ -1,0 +1,46 @@
+{
+  "protocol_version": "v2r1",
+  "runs_per_variant": 20,
+  "duration_s": 60,
+  "phase_low_s": 30,
+  "phase_high_candidates_s": [12, 13, 14, 15, 16, 17, 18],
+  "high_capacity_percent": 140,
+  "delay_ms": 45,
+  "loss_percent": 1,
+  "latency_ms": 160,
+  "queue_formula_capacity_percent": 112,
+  "plan_seed": 20260910,
+  "bootstrap_seed": 20260911,
+  "conditions": [
+    {
+      "id": "b85_c102",
+      "input_rate_bps": 8500000,
+      "low_capacity_percent": 102,
+      "source_file": "assets/source_8_5mbps.ts"
+    },
+    {
+      "id": "b85_c104",
+      "input_rate_bps": 8500000,
+      "low_capacity_percent": 104,
+      "source_file": "assets/source_8_5mbps.ts"
+    },
+    {
+      "id": "b85_c106",
+      "input_rate_bps": 8500000,
+      "low_capacity_percent": 106,
+      "source_file": "assets/source_8_5mbps.ts"
+    },
+    {
+      "id": "b4_c104",
+      "input_rate_bps": 4000000,
+      "low_capacity_percent": 104,
+      "source_file": "assets/source_4mbps.ts"
+    },
+    {
+      "id": "b12_c104",
+      "input_rate_bps": 12000000,
+      "low_capacity_percent": 104,
+      "source_file": "assets/source_12mbps.ts"
+    }
+  ]
+}
