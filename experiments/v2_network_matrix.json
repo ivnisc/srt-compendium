@@ -1,0 +1,35 @@
+{
+  "protocol_version": "v2n1",
+  "runs_per_variant": 20,
+  "duration_s": 60,
+  "phase_low_s": 30,
+  "phase_high_candidates_s": [12, 13, 14, 15, 16, 17, 18],
+  "input_rate_bps": 8500000,
+  "source_file": "assets/source_8_5mbps.ts",
+  "high_capacity_percent": 140,
+  "low_capacity_percent": 104,
+  "latency_ms": 160,
+  "queue_formula_capacity_percent": 112,
+  "plan_seed": 20260914,
+  "bootstrap_seed": 20260915,
+  "minimum_phase_pass_fraction": 0.8,
+  "phase_gate": {
+    "max_high_belated_fraction": 0.002,
+    "max_high_drop_fraction": 0.0005,
+    "max_high_rtt_excess_ms": 20.0,
+    "minimum_event_multiplier": 1.5,
+    "minimum_belated_fraction_increase": 0.0005,
+    "minimum_drop_fraction_increase": 0.0001,
+    "minimum_rtt_increase_ms": 5.0,
+    "minimum_buffer_increase_ms": 20.0,
+    "maximum_recovery_rtt_excess_ms": 5.0,
+    "maximum_recovery_buffer_excess_ms": 20.0
+  },
+  "conditions": [
+    {"id": "d30_l05", "delay_ms": 30, "loss_percent": 0.5},
+    {"id": "d30_l2", "delay_ms": 30, "loss_percent": 2.0},
+    {"id": "d45_l1", "delay_ms": 45, "loss_percent": 1.0},
+    {"id": "d60_l05", "delay_ms": 60, "loss_percent": 0.5},
+    {"id": "d60_l2", "delay_ms": 60, "loss_percent": 2.0}
+  ]
+}
