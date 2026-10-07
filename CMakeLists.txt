@@ -5,25 +5,36 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(SRT_ROOT "/Users/ivnisc/Projects/srt" CACHE PATH "Ruta al repositorio de SRT")
+set(SRT_ROOT "" CACHE PATH "Ruta opcional al repositorio o instalación de SRT")
 
-find_path(SRT_INCLUDE_DIR
-    NAMES srt.h srt/srt.h
-    HINTS
+set(SRT_INCLUDE_HINTS
+    /usr/local/include
+    /opt/homebrew/include
+)
+set(SRT_LIBRARY_HINTS
+    /usr/local/lib
+    /opt/homebrew/lib
+)
+if(SRT_ROOT)
+    list(PREPEND SRT_INCLUDE_HINTS
         "${SRT_ROOT}/srtcore"
         "${SRT_ROOT}"
         "${SRT_ROOT}/build"
-        /usr/local/include
-        /opt/homebrew/include
+    )
+    list(PREPEND SRT_LIBRARY_HINTS
+        "${SRT_ROOT}/build"
+    )
+endif()
+
+find_path(SRT_INCLUDE_DIR
+    NAMES srt.h srt/srt.h
+    HINTS ${SRT_INCLUDE_HINTS}
     PATH_SUFFIXES srt
 )
 
 find_library(SRT_LIBRARY
     NAMES srt
-    HINTS
-        "${SRT_ROOT}/build"
-        /usr/local/lib
-        /opt/homebrew/lib
+    HINTS ${SRT_LIBRARY_HINTS}
 )
 
 if(NOT SRT_INCLUDE_DIR OR NOT SRT_LIBRARY)
@@ -41,8 +52,10 @@ add_executable(srt_experiment
 target_include_directories(srt_experiment PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${SRT_INCLUDE_DIR}"
-    "${SRT_ROOT}/build"
 )
+if(SRT_ROOT)
+    target_include_directories(srt_experiment PRIVATE "${SRT_ROOT}/build")
+endif()
 
 target_link_libraries(srt_experiment PRIVATE
     "${SRT_LIBRARY}"
@@ -51,7 +64,7 @@ target_link_libraries(srt_experiment PRIVATE
     OpenSSL::Crypto
 )
 
-if(APPLE)
+if(APPLE AND SRT_ROOT)
     set_target_properties(srt_experiment PROPERTIES
         BUILD_RPATH "${SRT_ROOT}/build"
     )
@@ -74,7 +87,21 @@ if(BUILD_TESTING)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
     endif()
     find_program(PDFLATEX_EXECUTABLE pdflatex)
-    if(PDFLATEX_EXECUTABLE)
+    set(LATEX_SMOKE_INPUTS
+        tests/latex_smoke.tex
+        latex/hipotesis_objetivos.tex
+        latex/modelo_metodologia.tex
+        latex/resultados_v2_final.tex
+        latex/resultados_robustez_v2.tex
+        latex/correccion_pipeline_preliminar.tex
+    )
+    set(LATEX_SMOKE_READY TRUE)
+    foreach(INPUT IN LISTS LATEX_SMOKE_INPUTS)
+        if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${INPUT}")
+            set(LATEX_SMOKE_READY FALSE)
+        endif()
+    endforeach()
+    if(PDFLATEX_EXECUTABLE AND LATEX_SMOKE_READY)
         file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/latex-test")
         add_test(NAME latex_fragments
             COMMAND "${PDFLATEX_EXECUTABLE}" -interaction=nonstopmode

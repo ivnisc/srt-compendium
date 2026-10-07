@@ -33,7 +33,8 @@ if [[ -n ${SRT_ROOT:-} ]]; then
 elif [[ -f $project_dir/../../srtcore/srt.h ]]; then
   srt_root=$(cd "$project_dir/../.." && pwd)
 else
-  srt_root=/Users/ivnisc/Projects/srt
+  echo "No se pudo localizar SRT; defina SRT_ROOT con la ruta del repositorio compilado" >&2
+  exit 1
 fi
 
 if [[ ! -x $binary ]]; then
@@ -62,6 +63,16 @@ else
   source_sha256=$(shasum -a 256 "$source_file" | awk '{print $1}')
 fi
 srt_git_commit=$(git -C "$srt_root" rev-parse HEAD 2>/dev/null || printf unknown)
+if [[ -n ${EXPECTED_SOURCE_SHA256:-} &&
+      $source_sha256 != "$EXPECTED_SOURCE_SHA256" ]]; then
+  echo "La fuente no coincide con el SHA-256 congelado" >&2
+  exit 1
+fi
+if [[ -n ${EXPECTED_SRT_GIT_COMMIT:-} &&
+      $srt_git_commit != "$EXPECTED_SRT_GIT_COMMIT" ]]; then
+  echo "La revisión de SRT no coincide con el commit congelado" >&2
+  exit 1
+fi
 if command -v sha256sum >/dev/null; then
   experiment_binary_sha256=$(sha256sum "$binary" | awk '{print $1}')
 else
