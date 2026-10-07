@@ -82,7 +82,8 @@ if(BUILD_TESTING)
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
         add_test(NAME analysis
-            COMMAND "${Python3_EXECUTABLE}" -m unittest tests/test_analysis.py)
+            COMMAND "${Python3_EXECUTABLE}" -m unittest discover
+                    -s tests -p test_*.py)
         set_tests_properties(analysis PROPERTIES
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
     endif()

@@ -17,6 +17,18 @@ for binary in tc ip ping cmake c++ python3 ffmpeg awk paste; do
   }
 done
 
+host_virtualization=unknown
+if command -v systemd-detect-virt >/dev/null; then
+  host_virtualization=$(systemd-detect-virt 2>/dev/null || printf none)
+fi
+cpu_frequency_control=unavailable
+for governor_path in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+  if [[ -f $governor_path ]]; then
+    cpu_frequency_control=available
+    break
+  fi
+done
+
 namespace=srtseedns0
 root_device=srtseedtx0
 peer_device=srtseedrx0
@@ -63,9 +75,11 @@ if sudo -n tc qdisc replace dev "$root_device" root netem loss random 30% seed 1
 fi
 
 mkdir -p "$(dirname "$output")"
-printf 'NETEM_SEED_SUPPORTED=%s\nNETEM_SEED_REPRODUCIBLE=%s\n' \
-  "$seed_supported" "$seed_reproducible" > "$output"
-printf 'netem_seed_syntax=%s\nnetem_seed_reproducible=%s\noutput=%s\n' \
-  "$seed_supported" "$seed_reproducible" "$output"
+printf 'NETEM_SEED_SUPPORTED=%s\nNETEM_SEED_REPRODUCIBLE=%s\nHOST_VIRTUALIZATION=%s\nCPU_FREQUENCY_CONTROL=%s\n' \
+  "$seed_supported" "$seed_reproducible" "$host_virtualization" \
+  "$cpu_frequency_control" > "$output"
+printf 'netem_seed_syntax=%s\nnetem_seed_reproducible=%s\nhost_virtualization=%s\ncpu_frequency_control=%s\noutput=%s\n' \
+  "$seed_supported" "$seed_reproducible" "$host_virtualization" \
+  "$cpu_frequency_control" "$output"
 tc -V
 uname -a

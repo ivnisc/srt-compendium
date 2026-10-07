@@ -387,7 +387,7 @@ if [[ -n ${scheduler_pid:-} ]]; then
   scheduler_pid=
 fi
 
-printf 'key,value\nprotocol_version,%s\nscenario,%s\nvariant,%s\nrun_id,%s\nseed,%s\nseed_reproducible,%s\ninput_rate_bps,%s\nsource_probe_bps,%s\nsource_rate_tolerance_percent,%s\nduration_s,%s\nphase_high_s,%s\nphase_low_s,%s\nlatency_ms,%s\ndelay_ms,%s\nloss_percent,%s\nreorder_percent,%s\nreorder_percent_configured,%s\nreorder_percent_effective,%s\nsample_ms,%s\ntopology,%s\ninterface,%s\nqueue_limit_packets,%s\nqueue_formula_capacity_percent,%s\nhigh_capacity_percent,%s\nlow_capacity_percent,%s\nhigh_rate_kbit,%s\nlow_rate_kbit,%s\nsender_cpu,%s\nreceiver_cpu,%s\ncpu_governors,%s\ncpu_frequencies_khz_at_start,%s\ncontroller_selection_sha256,%s\ncontroller_config_sha256,%s\nexperiment_matrix_sha256,%s\nexperiment_plan_sha256,%s\nexperiment_binary_sha256,%s\nsource_sha256,%s\nsrt_git_commit,%s\n' \
+printf 'key,value\nprotocol_version,%s\nscenario,%s\nvariant,%s\nrun_id,%s\nseed,%s\nseed_reproducible,%s\ninput_rate_bps,%s\nsource_probe_bps,%s\nsource_rate_tolerance_percent,%s\nduration_s,%s\nphase_high_s,%s\nphase_low_s,%s\nlatency_ms,%s\ndelay_ms,%s\nloss_percent,%s\nreorder_percent,%s\nreorder_percent_configured,%s\nreorder_percent_effective,%s\nsample_ms,%s\ntopology,%s\ninterface,%s\nqueue_limit_packets,%s\nqueue_formula_capacity_percent,%s\nhigh_capacity_percent,%s\nlow_capacity_percent,%s\nhigh_rate_kbit,%s\nlow_rate_kbit,%s\nsender_cpu,%s\nreceiver_cpu,%s\ncpu_governors,%s\ncpu_frequencies_khz_at_start,%s\nhost_virtualization,%s\ncpu_frequency_control,%s\ncontroller_selection_sha256,%s\ncontroller_config_sha256,%s\nexperiment_matrix_sha256,%s\nexperiment_plan_sha256,%s\nexperiment_binary_sha256,%s\nsource_sha256,%s\nsrt_git_commit,%s\n' \
   "$PROTOCOL_VERSION" "$scenario" "$variant" "$run_id" "$seed" "$NETEM_SEED_REPRODUCIBLE" "$INPUT_RATE_BPS" \
   "$source_probe_bps" "$SOURCE_RATE_TOLERANCE_PERCENT" \
   "$DURATION_S" "$PHASE_HIGH_S" "$PHASE_LOW_S" "$LATENCY_MS" \
@@ -395,6 +395,7 @@ printf 'key,value\nprotocol_version,%s\nscenario,%s\nvariant,%s\nrun_id,%s\nseed
   "$TOPOLOGY" "$network_device" "$queue_limit" "$queue_formula_capacity_percent" \
   "$HIGH_CAPACITY_PERCENT" "$LOW_CAPACITY_PERCENT" "$high_rate_kbit" "$low_rate_kbit" \
   "${SENDER_CPU:-}" "${RECEIVER_CPU:-}" "$cpu_governors" "$cpu_frequencies_khz" \
+  "${HOST_VIRTUALIZATION:-unknown}" "${CPU_FREQUENCY_CONTROL:-unknown}" \
   "$controller_selection_sha256" "$controller_config_sha256" \
   "${EXPERIMENT_MATRIX_SHA256:-}" "${EXPERIMENT_PLAN_SHA256:-}" \
   "$experiment_binary_sha256" "$source_sha256" "$srt_git_commit" \

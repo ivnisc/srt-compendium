@@ -10,6 +10,17 @@ from pathlib import Path
 import analyze
 
 
+def cpu_policy_accepted(governors: str, virtualization: str,
+                        frequency_control: str) -> bool:
+    if governors == "performance":
+        return True
+    return (
+        governors == "unavailable"
+        and virtualization not in ("", "none", "unknown")
+        and frequency_control == "unavailable"
+    )
+
+
 def validate(args: argparse.Namespace) -> dict:
     paths = [
         path for path in analyze.discover_run_directories(Path(args.results))
@@ -29,10 +40,17 @@ def validate(args: argparse.Namespace) -> dict:
         tx = analyze.summarize_stats(path / "tx_stats.csv")
         rx = analyze.summarize_stats(path / "rx_stats.csv")
         sample_ms = analyze.numeric(run.get("sample_ms"), 100.0)
+        governors = run.get("cpu_governors", "unknown")
+        virtualization = run.get("host_virtualization", "unknown")
+        frequency_control = run.get("cpu_frequency_control", "unknown")
         rows.append({
             "run": str(path),
             "protocol_v2": run.get("protocol_version") == "v2",
-            "governor_performance": run.get("cpu_governors") == "performance",
+            "cpu_governors": governors,
+            "host_virtualization": virtualization,
+            "cpu_frequency_control": frequency_control,
+            "cpu_policy_accepted": cpu_policy_accepted(
+                governors, virtualization, frequency_control),
             "affinity_valid": (
                 run.get("sender_cpu") == args.sender_cpu
                 and run.get("receiver_cpu") == args.receiver_cpu
@@ -73,7 +91,7 @@ def validate(args: argparse.Namespace) -> dict:
     criteria = {
         "minimum_runs": len(rows) >= args.min_runs,
         "protocol_v2": all(row["protocol_v2"] for row in rows),
-        "performance_governor": all(row["governor_performance"] for row in rows),
+        "cpu_policy": all(row["cpu_policy_accepted"] for row in rows),
         "cpu_affinity": all(row["affinity_valid"] for row in rows),
         "source_constant": len(source_hashes) == 1 and bool(next(iter(source_hashes))),
         "payload_complete_and_constant": (
@@ -114,6 +132,13 @@ def validate(args: argparse.Namespace) -> dict:
             "maximum_sample_interval_us": "2 * configured sample interval",
         },
         "summary": {
+            "cpu_governors": sorted({row["cpu_governors"] for row in rows}),
+            "host_virtualization": sorted({
+                row["host_virtualization"] for row in rows
+            }),
+            "cpu_frequency_control": sorted({
+                row["cpu_frequency_control"] for row in rows
+            }),
             "byteSentUniqueTotal_cv": analyze.coefficient_of_variation(sent_unique),
             "payload_bytes_read_cv": analyze.coefficient_of_variation(payloads),
             "maximum_rtt_p99_ms": max(row["rtt_p99_ms"] for row in rows),
