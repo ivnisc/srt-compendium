@@ -15,6 +15,7 @@ minimum_runs=$7
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 project_dir=$(cd "$script_dir/.." && pwd)
 results="$project_dir/results/v2"
+selection_file=${V2_SELECTION_FILE:-"$results/$selection_dir/selection.json"}
 
 "$script_dir/analyze_v2_controls.sh"
 python3 "$project_dir/analysis/analyze.py" compare \
@@ -29,7 +30,7 @@ for run_dir in "$results/dynamic/$check_variant/run_$check_id" \
   [[ -f $run_dir/run_metadata.csv ]] || continue
   run_name="$(basename "$(dirname "$run_dir")")_$(basename "$run_dir")"
   python3 "$project_dir/analysis/validate_v2_equivalence.py" \
-    --run-dir "$run_dir" --selection "$results/$selection_dir/selection.json" \
+    --run-dir "$run_dir" --selection "$selection_file" \
     --output "$results/equivalence/$run_name.json"
 done
 

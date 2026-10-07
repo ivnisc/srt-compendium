@@ -4,8 +4,8 @@ set -euo pipefail
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 project_dir=$(cd "$script_dir/.." && pwd)
 controller="$project_dir/experiments/controller_v2_final.env"
-selection="$project_dir/results/v2/detector_selection_pilot2/selection.json"
-audit="$project_dir/results/v2/pilot2_audit.json"
+selection="$project_dir/experiments/frozen/detector_selection_pilot2.json"
+audit="$project_dir/experiments/frozen/pilot2_audit.json"
 
 if [[ ! -f $controller || ! -f $selection || ! -f $audit ]]; then
   echo "Faltan artefactos congelados del segundo piloto" >&2

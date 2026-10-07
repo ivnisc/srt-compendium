@@ -15,6 +15,7 @@ runs=$7
 random_seed=$8
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 project_dir=$(cd "$script_dir/.." && pwd)
+selection_file=${V2_SELECTION_FILE:-"$project_dir/results/v2/$selection_dir/selection.json"}
 if [[ ${V2_CPU_POLICY_ACTIVE:-no} != yes ]]; then
   exec "$script_dir/with_v2_cpu_policy.sh" "$0" "$@"
 fi
@@ -51,7 +52,7 @@ run_once clean vanilla "${label}_pre"
 run_once dynamic "$check_variant" "$check_id"
 python3 "$project_dir/analysis/validate_v2_equivalence.py" \
   --run-dir "$project_dir/results/v2/dynamic/$check_variant/run_$check_id" \
-  --selection "$project_dir/results/v2/$selection_dir/selection.json" \
+  --selection "$selection_file" \
   --output "$project_dir/results/v2/${label}_equivalence_preflight.json"
 
 python3 - "$runs" "$control_variant" "$assistant_variant" "$random_seed" <<'PY' |

@@ -6,7 +6,7 @@ project_dir=$(cd "$script_dir/.." && pwd)
 config="$project_dir/experiments/v2_robustness.json"
 root="$project_dir/results/v2/robustness"
 plan="$root/execution_plan.csv"
-selection="$project_dir/results/v2/detector_selection_pilot2/selection.json"
+selection="$project_dir/experiments/frozen/detector_selection_pilot2.json"
 
 if [[ ${V2_CPU_POLICY_ACTIVE:-no} != yes ]]; then
   exec "$script_dir/with_v2_cpu_policy.sh" "$0" "$@"
