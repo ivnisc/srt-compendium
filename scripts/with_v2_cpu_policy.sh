@@ -10,8 +10,10 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 state_dir=$(mktemp -d /tmp/srt-v2-cpu-policy.XXXXXX)
 state_file="$state_dir/state.csv"
 restore() {
+  local exit_status=$?
   sudo -n "$script_dir/cpu_policy.sh" restore "$state_file" || true
   rmdir "$state_dir" 2>/dev/null || true
+  return "$exit_status"
 }
 trap restore EXIT INT TERM
 

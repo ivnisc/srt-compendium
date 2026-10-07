@@ -206,6 +206,7 @@ network_device=$INTERFACE
 receiver_host=127.0.0.1
 
 cleanup() {
+  local exit_status=$?
   if [[ -n ${scheduler_pid:-} ]]; then kill "$scheduler_pid" 2>/dev/null || true; fi
   if [[ -n ${receiver_pid:-} ]]; then kill "$receiver_pid" 2>/dev/null || true; fi
   if [[ $network_installed == yes ]]; then
@@ -216,6 +217,7 @@ cleanup() {
       "$NAMESPACE_PEER_IF" "$NAMESPACE_ROOT_CIDR" "$NAMESPACE_PEER_CIDR" || true
     sudo -n chown -R "$(id -u):$(id -g)" "$run_dir" 2>/dev/null || true
   fi
+  return "$exit_status"
 }
 trap cleanup EXIT INT TERM
 
@@ -238,10 +240,14 @@ cpu_governors=unavailable
 cpu_frequencies_khz=unavailable
 if [[ $(uname -s) == Linux ]]; then
   cpu_governors=$(for path in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-    [[ -f $path ]] && cat "$path"
+    if [[ -f $path ]]; then
+      cat "$path"
+    fi
   done | sort -u | paste -sd+ -)
   cpu_frequencies_khz=$(for path in /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq; do
-    [[ -f $path ]] && cat "$path"
+    if [[ -f $path ]]; then
+      cat "$path"
+    fi
   done | paste -sd+ -)
   cpu_governors=${cpu_governors:-unavailable}
   cpu_frequencies_khz=${cpu_frequencies_khz:-unavailable}
