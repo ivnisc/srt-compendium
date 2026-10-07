@@ -121,6 +121,9 @@ def audit_run(run_dir: Path, b_ref: float, payload_ref: float,
         "low_capacity_percent": run.get("low_capacity_percent", ""),
         "sender_cpu": run.get("sender_cpu", ""),
         "receiver_cpu": run.get("receiver_cpu", ""),
+        "experiment_plan_sha256": run.get("experiment_plan_sha256", ""),
+        "experiment_git_commit": run.get("experiment_git_commit", ""),
+        "experiment_git_dirty": run.get("experiment_git_dirty", "unknown"),
         "experiment_binary_sha256": run.get("experiment_binary_sha256", ""),
         "source_sha256": run.get("source_sha256", ""),
         "srt_git_commit": run.get("srt_git_commit", ""),
@@ -259,7 +262,7 @@ def main() -> None:
         "reorder_percent_effective", "queue_limit_packets",
         "high_capacity_percent", "low_capacity_percent", "sender_cpu",
         "receiver_cpu", "experiment_binary_sha256", "source_sha256",
-        "srt_git_commit",
+        "srt_git_commit", "experiment_plan_sha256", "experiment_git_commit",
     )
     signature_values = {
         field: sorted({str(row[field]) for row in reference + treatment})
@@ -277,6 +280,9 @@ def main() -> None:
             row["source_valid"] for row in reference + treatment),
         "experimental_signature_constant": all(
             len(values) == 1 and values[0] for values in signature_values.values()),
+        "experiment_tree_clean": all(
+            row["experiment_git_dirty"] == "no"
+            for row in reference + treatment),
         "host_controls_accepted": (
             host.get("status") == "accepted"
             and f"run_{args.label}_pre" in clean_names

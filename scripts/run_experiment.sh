@@ -63,6 +63,15 @@ else
   source_sha256=$(shasum -a 256 "$source_file" | awk '{print $1}')
 fi
 srt_git_commit=$(git -C "$srt_root" rev-parse HEAD 2>/dev/null || printf unknown)
+experiment_git_commit=$(
+  git -C "$project_dir" rev-parse HEAD 2>/dev/null || printf unknown)
+experiment_git_dirty=unknown
+if [[ $experiment_git_commit != unknown ]]; then
+  experiment_git_dirty=no
+  if [[ -n $(git -C "$project_dir" status --porcelain --untracked-files=no) ]]; then
+    experiment_git_dirty=yes
+  fi
+fi
 if [[ -n ${EXPECTED_SOURCE_SHA256:-} &&
       $source_sha256 != "$EXPECTED_SOURCE_SHA256" ]]; then
   echo "La fuente no coincide con el SHA-256 congelado" >&2
@@ -393,7 +402,7 @@ if [[ -n ${scheduler_pid:-} ]]; then
   scheduler_pid=
 fi
 
-printf 'key,value\nprotocol_version,%s\nscenario,%s\nvariant,%s\nrun_id,%s\nseed,%s\nseed_reproducible,%s\ninput_rate_bps,%s\nsource_probe_bps,%s\nsource_rate_tolerance_percent,%s\nduration_s,%s\nphase_high_s,%s\nphase_low_s,%s\nlatency_ms,%s\ndelay_ms,%s\nloss_percent,%s\nreorder_percent,%s\nreorder_percent_configured,%s\nreorder_percent_effective,%s\nsample_ms,%s\ntopology,%s\ninterface,%s\nqueue_limit_packets,%s\nqueue_formula_capacity_percent,%s\nhigh_capacity_percent,%s\nlow_capacity_percent,%s\nhigh_rate_kbit,%s\nlow_rate_kbit,%s\nsender_cpu,%s\nreceiver_cpu,%s\ncpu_governors,%s\ncpu_frequencies_khz_at_start,%s\nhost_virtualization,%s\ncpu_frequency_control,%s\ncontroller_selection_sha256,%s\ncontroller_config_sha256,%s\nexperiment_matrix_sha256,%s\nexperiment_plan_sha256,%s\nexperiment_binary_sha256,%s\nsource_sha256,%s\nsrt_git_commit,%s\n' \
+printf 'key,value\nprotocol_version,%s\nscenario,%s\nvariant,%s\nrun_id,%s\nseed,%s\nseed_reproducible,%s\ninput_rate_bps,%s\nsource_probe_bps,%s\nsource_rate_tolerance_percent,%s\nduration_s,%s\nphase_high_s,%s\nphase_low_s,%s\nlatency_ms,%s\ndelay_ms,%s\nloss_percent,%s\nreorder_percent,%s\nreorder_percent_configured,%s\nreorder_percent_effective,%s\nsample_ms,%s\ntopology,%s\ninterface,%s\nqueue_limit_packets,%s\nqueue_formula_capacity_percent,%s\nhigh_capacity_percent,%s\nlow_capacity_percent,%s\nhigh_rate_kbit,%s\nlow_rate_kbit,%s\nsender_cpu,%s\nreceiver_cpu,%s\ncpu_governors,%s\ncpu_frequencies_khz_at_start,%s\nhost_virtualization,%s\ncpu_frequency_control,%s\ncontroller_selection_sha256,%s\ncontroller_config_sha256,%s\nexperiment_matrix_sha256,%s\nexperiment_plan_sha256,%s\nexperiment_git_commit,%s\nexperiment_git_dirty,%s\nexperiment_binary_sha256,%s\nsource_sha256,%s\nsrt_git_commit,%s\n' \
   "$PROTOCOL_VERSION" "$scenario" "$variant" "$run_id" "$seed" "$NETEM_SEED_REPRODUCIBLE" "$INPUT_RATE_BPS" \
   "$source_probe_bps" "$SOURCE_RATE_TOLERANCE_PERCENT" \
   "$DURATION_S" "$PHASE_HIGH_S" "$PHASE_LOW_S" "$LATENCY_MS" \
@@ -404,6 +413,7 @@ printf 'key,value\nprotocol_version,%s\nscenario,%s\nvariant,%s\nrun_id,%s\nseed
   "${HOST_VIRTUALIZATION:-unknown}" "${CPU_FREQUENCY_CONTROL:-unknown}" \
   "$controller_selection_sha256" "$controller_config_sha256" \
   "${EXPERIMENT_MATRIX_SHA256:-}" "${EXPERIMENT_PLAN_SHA256:-}" \
+  "$experiment_git_commit" "$experiment_git_dirty" \
   "$experiment_binary_sha256" "$source_sha256" "$srt_git_commit" \
   > "$run_dir/run_metadata.csv"
 

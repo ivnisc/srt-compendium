@@ -11,6 +11,7 @@ if (( runs < 20 )); then
 fi
 "$script_dir/check_v2_final_freeze.sh"
 export V2_SELECTION_FILE="$project_dir/experiments/frozen/detector_selection_pilot2.json"
+export V2_CHECKPOINT_EVERY=${V2_CHECKPOINT_EVERY:-100}
 
 exec "$script_dir/run_v2_screening.sh" \
   final_ab finalvanilla assistantv2final assistantv2finalcheck \
