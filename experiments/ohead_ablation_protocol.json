@@ -1,0 +1,80 @@
+{
+  "protocol_id": "v2_ohead_ablation_1",
+  "status": "frozen_before_execution",
+  "purpose": "Separate the effect of temporal adaptation from the effect of using SRTO_OHEADBW=10",
+  "evidence_source_commit": "2ea706bcb3ee728925f3364d914d2135a00e83e5",
+  "evidence_tag": "thesis-evidence-v2",
+  "expected_binary_sha256": "b7bb5f337862322531d9ae8b2dffb4d475d6ae42d053191c12d6938992149734",
+  "expected_srt_git_commit": "c39196c9a568ae4e3289dd65cf54ba4154deb4a1",
+  "expected_source_sha256": "35e43ccfca02e19b33cf1a2e8c2bf33a5bbe5970b8b8ef694eb9a21fecb12c99",
+  "expected_controller_config_sha256": "36e7a68a9ee968f92a05af8dd6faea9c63949f9ca17e1a6a9a6da1a9fd7a66f4",
+  "expected_controller_selection_sha256": "24f7fb4a2416ec46ba58eb91f365d1cb015fd7b7e0788ec70eeb252349a7011c",
+  "baseline_B_ref": 65881120.0,
+  "expected_payload_bytes": 63749672,
+  "runs_per_arm": 100,
+  "valid_experimental_runs": 400,
+  "design": "unpaired_permuted_blocks",
+  "block_size": 4,
+  "plan_seed": 20261118,
+  "bootstrap_seed": 20261119,
+  "bootstrap_iterations": 100000,
+  "alpha": 0.05,
+  "equivalence_margin_U": 0.0003,
+  "primary_contrast": "assistant_minus_const10",
+  "input_rate_bps": 8500000,
+  "duration_s": 60,
+  "phase_high_s": 15,
+  "phase_low_s": 30,
+  "high_capacity_percent": 140,
+  "low_capacity_percent": 104,
+  "latency_ms": 160,
+  "delay_ms": 45,
+  "loss_percent": 1.0,
+  "reorder_percent": 0.0,
+  "sample_ms": 100,
+  "queue_limit_packets": 151,
+  "queue_formula_capacity_percent": 112,
+  "sender_cpu": "0",
+  "receiver_cpu": "1",
+  "arms": [
+    {
+      "id": "vanilla",
+      "variant": "ablation_vanilla25",
+      "mode": "vanilla",
+      "nominal_ohead": 25,
+      "active_ohead": 25
+    },
+    {
+      "id": "const10",
+      "variant": "ablation_const10",
+      "mode": "vanilla",
+      "nominal_ohead": 10,
+      "active_ohead": 10
+    },
+    {
+      "id": "oracle10",
+      "variant": "ablation_oracle10",
+      "mode": "fixed",
+      "nominal_ohead": 25,
+      "active_ohead": 10
+    },
+    {
+      "id": "assistant",
+      "variant": "ablation_assistant",
+      "mode": "assistant_v2",
+      "nominal_ohead": 25,
+      "active_ohead": 10
+    }
+  ],
+  "clean_controls": {
+    "before": 5,
+    "after_each_completed_jobs": 100,
+    "after": 5
+  },
+  "assistant_equivalence_reports_required": 100,
+  "primary_metric": "U=byteRecvUniqueTotal/B_ref",
+  "equivalence_method": "Welch TOST with 90 percent confidence interval",
+  "directional_interval": "unpaired percentile bootstrap 95 percent confidence interval",
+  "replacement_policy": "Only runs rejected by predeclared integrity criteria are replaced; failed directories remain immutable",
+  "secondary_inference": "descriptive_only"
+}
