@@ -164,7 +164,7 @@ case "$variant" in
     active_ohead=${ACTIVE_OHEAD:?falta ACTIVE_OHEAD}
     controller_selection_sha256=${V2_SELECTION_SHA256:?falta V2_SELECTION_SHA256}
     ;;
-  assistantv2final|assistantv2finalcheck|ablation_assistant|ablation_check)
+  assistantv2final|assistantv2finalcheck|ablation_assistant)
     sender_mode=assistant_v2
     controller_file="$project_dir/experiments/controller_v2_final.env"
     if [[ ! -f $controller_file ]]; then

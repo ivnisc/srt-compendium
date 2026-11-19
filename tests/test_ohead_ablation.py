@@ -40,6 +40,12 @@ class OheadAblationPlanTests(unittest.TestCase):
     def test_generation_is_deterministic(self) -> None:
         self.assertEqual(plan.build(self.config), plan.build(self.config))
 
+    def test_runtime_protocol_version_matches_frozen_id(self) -> None:
+        wrapper = (ROOT / "scripts" /
+                   "run_ohead_ablation_experiment.sh").read_text()
+        self.assertIn(
+            f'PROTOCOL_VERSION={self.config["protocol_id"]}', wrapper)
+
     def test_existing_plan_must_match(self) -> None:
         expected = plan.normalized(plan.build(self.config))
         with tempfile.TemporaryDirectory() as directory:

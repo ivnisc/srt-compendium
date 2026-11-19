@@ -10,6 +10,7 @@ progress="$results/progress.csv"
 logs="$results/logs"
 audits="$results/run_audits"
 equivalence_dir="$results/equivalence"
+disposition_dir="$results/equivalence_dispositions"
 
 if [[ ${V2_CPU_POLICY_ACTIVE:-no} != yes ]]; then
   exec "$script_dir/with_v2_cpu_policy.sh" "$0" "$@"
@@ -64,7 +65,7 @@ if [[ $actual_srt != "$expected_srt" ]]; then
 fi
 "$script_dir/check_v2_final_freeze.sh"
 
-mkdir -p "$results" "$logs" "$audits" "$equivalence_dir"
+mkdir -p "$results" "$logs" "$audits" "$equivalence_dir" "$disposition_dir"
 python3 "$project_dir/analysis/generate_ohead_ablation_plan.py" \
   --config "$protocol" --output "$plan"
 EXPERIMENT_MATRIX_SHA256=$(hash_file "$protocol")
@@ -128,11 +129,20 @@ slot_is_complete() {
       {found=1} END {exit !found}' "$progress"
 }
 
-attempt_count() {
+replacement_count() {
   local order=$1
   awk -F, -v order="$order" \
-    'NR > 1 && $3 == "experimental" && $4 == order {count++} END {print count+0}' \
+    'NR > 1 && $3 == "experimental" && $4 == order && \
+      $9 == "invalid_integrity" {count++} END {print count+0}' \
     "$progress"
+}
+
+report_status() {
+  python3 - "$1" <<'PY'
+import json
+import sys
+print(json.load(open(sys.argv[1])).get("status", "audit_error"))
+PY
 }
 
 run_slot() {
@@ -142,41 +152,81 @@ run_slot() {
     return
   fi
   local attempt
-  attempt=$(attempt_count "$order")
+  attempt=$(replacement_count "$order")
   while (( attempt < 10 )); do
     local run_id=$planned_id
     if (( attempt > 0 )); then
       run_id=$((planned_id + attempt * 1000))
     fi
-    local event_id="plan_${order}_attempt_${attempt}"
+    local event_prefix="plan_${order}_attempt_${attempt}"
     local run_dir="$results/dynamic/$variant/run_$run_id"
     local audit_report="$audits/${variant}_run_${run_id}.json"
+    local integrity_report="$audits/${variant}_run_${run_id}_integrity.json"
     local equivalence=
+    local disposition=
     local log="$logs/${variant}_run_${run_id}.log"
 
     if [[ ! -e $run_dir ]]; then
       echo "[$order/400] $arm, corrida $run_id"
       if ! "$script_dir/run_ohead_ablation_experiment.sh" \
           dynamic "$variant" "$run_id" >"$log" 2>&1; then
-        record_progress "$event_id" experimental "$order" "$block" \
+        record_progress "${event_prefix}_runtime_failure" experimental \
+          "$order" "$block" \
           "$arm" "$variant" "$run_id" runtime_failure "$run_dir" ''
-        attempt=$((attempt + 1))
-        continue
+        echo "Falló la ejecución; la campaña se detiene para diagnóstico: $log" >&2
+        exit 1
       fi
+    fi
+
+    integrity_args=(
+      --protocol "$protocol" --plan "$plan" --audit-run "$run_dir"
+      --arm "$arm" --variant "$variant" --run-id "$run_id"
+      --audit-output "$integrity_report" --integrity-only
+    )
+    set +e
+    python3 "$project_dir/analysis/analyze_ohead_ablation.py" \
+      "${integrity_args[@]}" >>"$log" 2>&1
+    integrity_rc=$?
+    set -e
+    if [[ ! -f $integrity_report ]]; then
+      record_progress "${event_prefix}_audit_error" experimental "$order" \
+        "$block" "$arm" "$variant" "$run_id" audit_error "$run_dir" ''
+      echo "El auditor no produjo un informe; se detiene la campaña" >&2
+      exit 1
+    fi
+    integrity_status=$(report_status "$integrity_report")
+    if [[ $integrity_status == invalid_integrity ]]; then
+      record_progress "${event_prefix}_invalid_integrity" experimental \
+        "$order" "$block" "$arm" "$variant" "$run_id" \
+        invalid_integrity "$run_dir" "$integrity_report"
+      attempt=$((attempt + 1))
+      continue
+    fi
+    if [[ $integrity_rc -ne 0 || $integrity_status != valid_integrity ]]; then
+      record_progress "${event_prefix}_${integrity_status}" experimental \
+        "$order" "$block" "$arm" "$variant" "$run_id" \
+        "$integrity_status" "$run_dir" "$integrity_report"
+      echo "La auditoría exige diagnóstico: $integrity_report" >&2
+      exit 1
     fi
 
     if [[ $arm == assistant ]]; then
       equivalence="$equivalence_dir/run_${run_id}.json"
+      disposition="$disposition_dir/run_${run_id}.json"
       if [[ ! -f $equivalence ]]; then
-        if ! python3 "$project_dir/analysis/validate_v2_equivalence.py" \
+        set +e
+        python3 "$project_dir/analysis/validate_v2_equivalence.py" \
             --run-dir "$run_dir" \
             --selection "$project_dir/experiments/frozen/detector_selection_pilot2.json" \
-            --output "$equivalence" >>"$log" 2>&1; then
-          record_progress "$event_id" experimental "$order" "$block" \
-            "$arm" "$variant" "$run_id" equivalence_failure "$run_dir" \
-            "$equivalence"
-          attempt=$((attempt + 1))
-          continue
+            --output "$equivalence" >>"$log" 2>&1
+        equivalence_rc=$?
+        set -e
+        if [[ $equivalence_rc -ne 0 && ! -f $equivalence ]]; then
+          record_progress "${event_prefix}_equivalence_audit_error" \
+            experimental "$order" "$block" "$arm" "$variant" "$run_id" \
+            audit_error "$run_dir" ''
+          echo "El replay falló sin producir informe; se detiene la campaña" >&2
+          exit 1
         fi
       fi
     fi
@@ -189,15 +239,38 @@ run_slot() {
     if [[ -n $equivalence ]]; then
       audit_args+=(--equivalence "$equivalence")
     fi
-    if python3 "$project_dir/analysis/analyze_ohead_ablation.py" \
-        "${audit_args[@]}" >>"$log" 2>&1; then
-      record_progress "$event_id" experimental "$order" "$block" \
+    if [[ -n $disposition && -f $disposition ]]; then
+      audit_args+=(--equivalence-disposition "$disposition")
+    fi
+    set +e
+    python3 "$project_dir/analysis/analyze_ohead_ablation.py" \
+      "${audit_args[@]}" >>"$log" 2>&1
+    audit_rc=$?
+    set -e
+    if [[ ! -f $audit_report ]]; then
+      record_progress "${event_prefix}_audit_error" experimental "$order" \
+        "$block" "$arm" "$variant" "$run_id" audit_error "$run_dir" ''
+      echo "El auditor no produjo el informe final; se detiene la campaña" >&2
+      exit 1
+    fi
+    audit_status=$(report_status "$audit_report")
+    if [[ $audit_rc -eq 0 && $audit_status == valid ]]; then
+      record_progress "${event_prefix}_valid" experimental "$order" "$block" \
         "$arm" "$variant" "$run_id" valid "$run_dir" "$audit_report"
       return
     fi
-    record_progress "$event_id" experimental "$order" "$block" \
-      "$arm" "$variant" "$run_id" invalid "$run_dir" "$audit_report"
-    attempt=$((attempt + 1))
+    if [[ $audit_status == invalid_integrity ]]; then
+      record_progress "${event_prefix}_invalid_integrity" experimental \
+        "$order" "$block" "$arm" "$variant" "$run_id" \
+        invalid_integrity "$run_dir" "$audit_report"
+      attempt=$((attempt + 1))
+      continue
+    fi
+    record_progress "${event_prefix}_${audit_status}" experimental "$order" \
+      "$block" "$arm" "$variant" "$run_id" "$audit_status" "$run_dir" \
+      "$audit_report"
+    echo "La campaña se detiene para diagnóstico: $audit_report" >&2
+    exit 1
   done
   echo "El trabajo $order agotó diez intentos; se detiene la campaña" >&2
   exit 1
