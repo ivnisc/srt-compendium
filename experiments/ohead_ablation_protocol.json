@@ -1,5 +1,5 @@
 {
-  "protocol_id": "v2_ohead_ablation_1b",
+  "protocol_id": "v2_ohead_ablation_1c",
   "status": "frozen_before_execution",
   "amendments": [
     {
@@ -14,6 +14,13 @@
       "base_protocol_commit": "cda175a",
       "reviewed_implementation_commit": "a04b972",
       "reason": "Require explicit dispositions before resuming unresolved execution, audit, or controller readiness failures"
+    },
+    {
+      "id": 3,
+      "date": "2026-11-19",
+      "base_protocol_commit": "bce7260",
+      "reviewed_implementation_commit": "bce7260",
+      "reason": "Audit clean controls immediately and require documented replacements without modifying failed directories"
     }
   ],
   "purpose": "Separate the effect of temporal adaptation from the effect of using SRTO_OHEADBW=10",
@@ -91,18 +98,22 @@
   "clean_controls": {
     "before": 5,
     "after_each_completed_jobs": 100,
-    "after": 5
+    "after": 5,
+    "immediate_audit": true,
+    "replacement_requires_disposition": true,
+    "replacement_run_id_format": "<slot>_r<attempt>"
   },
   "assistant_traceability_records_required": 100,
   "primary_metric": "U=byteRecvUniqueTotal/B_ref",
   "equivalence_method": "Welch TOST with 90 percent confidence interval",
   "directional_interval": "unpaired percentile bootstrap 95 percent confidence interval",
-  "replacement_policy": "Only completed runs rejected by symmetric predeclared integrity criteria are replaced; treatment behavior and Python replay divergence never trigger replacement; failed directories remain immutable",
+  "replacement_policy": "Experimental runs rejected by symmetric predeclared integrity criteria are replaced; clean controls require a documented infrastructure disposition; treatment behavior and Python replay divergence never trigger replacement; failed directories remain immutable",
   "assistant_behavior_policy": {
     "included_in_primary_regardless_of_activation": true,
     "early_activation_is_outcome": true,
     "missing_restore_is_outcome": true,
     "transition_count_is_outcome": true,
+    "readiness_failure_is_irregular_behavior": true,
     "irregular_behavior_sensitivity_is_secondary": true
   },
   "equivalence_policy": {
@@ -125,6 +136,18 @@
     "runtime_or_audit_failure_halts_without_disposition": true,
     "authorized_failure_is_replaced_with_new_run_id": true
   },
+  "control_failure_disposition_policy": {
+    "allowed_decision": "infrastructure_failure_replace",
+    "required_fields": [
+      "decision",
+      "control_slot",
+      "attempt",
+      "run_id",
+      "justification"
+    ],
+    "all_failures_halt_without_disposition": true,
+    "accepted_replacement_is_linked_to_logical_slot": true
+  },
   "controller_crosscheck_policy": {
     "allowed_disposition": "retain_primary_controller_readiness_failure",
     "required_fields": [
@@ -137,6 +160,8 @@
   },
   "actuator_error_policy": {
     "decision_value": "set_ohead_error",
+    "active_maxbw_mismatch_halts": true,
+    "unverified_short_actuation_is_descriptive": true,
     "halts_for_diagnosis": true,
     "never_replaced_without_infrastructure_disposition": true
   },

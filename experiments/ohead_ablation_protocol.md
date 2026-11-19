@@ -236,3 +236,30 @@ Los informes derivados de cada reauditoría se escribirán en un archivo tempora
 y se promoverán de forma atómica. De este modo, una excepción no podrá hacer que
 el orquestador interprete como actual un informe producido por una pasada
 anterior.
+
+## Enmienda 3 (anterior a los datos)
+
+Fecha: 19 de noviembre de 2026. Protocolo anterior: commit `bce7260`.
+Implementación revisada: commit `bce7260`.
+
+Cada control limpio se auditará inmediatamente después de ejecutarse. Los cinco
+controles iniciales deberán quedar aceptados antes de iniciar el primer trabajo
+experimental. Esta misma verificación se aplicará a los controles intermedios y
+finales, evitando que una degradación del host se descubra recién al concluir
+las cuatrocientas corridas.
+
+Un control fallido, incompleto o rechazado permanecerá asociado a su
+identificador lógico y detendrá la campaña. Su reemplazo exigirá una disposición
+`infrastructure_failure_replace` que identifique el control, el intento y la
+corrida física, además de justificar la causa mediante el log o la evidencia de
+infraestructura. El intento original no se borrará ni se moverá. El reemplazo
+usará un identificador físico nuevo y el análisis final resolverá cada control
+lógico a partir del intento aceptado y de su trazabilidad.
+
+Una corrida asistida conservada con `v2_ready=0` seguirá formando parte del
+contraste primario, pero se marcará como `readiness_failure` y quedará fuera del
+análisis secundario restringido a conductas regulares. Asimismo, un desajuste
+persistente de `mbpsMaxBW` durante una actuación suficientemente larga se tratará
+como falla de aplicación del actuador y detendrá la campaña. Una actuación
+demasiado breve para comprobar el techo efectivo conservará carácter
+descriptivo y no invalidará la corrida.
