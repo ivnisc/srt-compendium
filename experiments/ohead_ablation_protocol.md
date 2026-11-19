@@ -155,3 +155,50 @@ Si `const10` resulta equivalente o superior al asistente, el efecto histórico
 frente a LiveCC permanece intacto, pero no se atribuirá una ventaja específica al
 estimador dentro de este perfil. Si el asistente supera prácticamente a
 `const10`, la campaña respaldará el valor adicional de la adaptación temporal.
+
+## Enmienda 1 (anterior a los datos)
+
+Fecha: 18 de noviembre de 2026. Protocolo base: commit `7685170`.
+
+La revisión del auditor detectó que la formulación original mezclaba criterios
+de integridad con respuestas producidas por el tratamiento. En particular, una
+activación anterior a la fase reducida, la ausencia de restauración y una
+cantidad distinta de cambios podían invalidar y reemplazar una corrida del
+asistente. Esa regla habría condicionado la inclusión a un comportamiento
+posterior a la asignación y, por lo tanto, podía favorecer el brazo asistido.
+
+Desde esta enmienda, el contraste primario incorpora todas las corridas que
+cumplan la integridad común, con independencia de cuándo actúe el controlador,
+cuántos cambios produzca o si retorna al valor nominal antes de finalizar. Esas
+conductas se registrarán como resultados. También se informará un análisis de
+sensibilidad secundario que excluya las conductas irregulares, sin sustituir el
+contraste principal.
+
+La ventana de 3.000 a 10.000 ms se comprobará simétricamente en los cuatro
+brazos. Debe contener al menos veinte muestras con RTT positivo. En el asistente,
+`v2_ready=1` se utilizará como verificación cruzada. Si la serie resulta
+calibrable y el binario informa lo contrario, la campaña se detendrá para
+diagnóstico y la corrida no será reemplazada automáticamente.
+
+La puntualidad de las transiciones de capacidad se comprobará en los cuatro
+brazos con una tolerancia de 250 ms. Las exclusiones y reemplazos quedarán
+limitados a fallas simétricas y predefinidas de archivos, identidad, payload,
+calendario, configuración, contadores o instrumentación.
+
+Una discrepancia entre el replay Python y C++ detendrá la campaña, pero nunca
+excluirá por sí sola una observación de `U`. El tratamiento está constituido por
+el binario C++ congelado. Si el diagnóstico atribuye la diferencia a la
+referencia o al replay, la corrida permanecerá en el análisis primario y la
+excepción se declarará al informar la equivalencia. Si se demuestra una falla
+independiente de infraestructura, la validez se resolverá mediante los criterios
+de integridad comunes y no por el resultado del replay.
+
+Para reanudar después de una discrepancia atribuida a la referencia, se deberá
+crear una disposición explícita con la decisión
+`retain_primary_reference_failure`, una justificación y la identificación de la
+corrida. El auditor conservará esa disposición junto al informe y contabilizará
+la excepción. No se admite una disposición que excluya por sí sola la corrida.
+
+Los fallos de ejecución o del propio auditor cuyo origen no esté demostrado
+detendrán la campaña. No se reemplazarán hasta establecer que corresponden a
+una causa de integridad independiente del tratamiento.
