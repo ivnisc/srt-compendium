@@ -227,6 +227,11 @@ Una decisión `set_ohead_error` detendrá la campaña como falla de aplicación 
 actuador. No autorizará un reemplazo hasta que una disposición de infraestructura
 documente la causa.
 
+Las disposiciones de reemplazo se almacenarán en
+`results/v2/ohead_ablation/failure_dispositions/plan_<orden>_attempt_<intento>.json`.
+Las excepciones de inicialización del controlador se conservarán en
+`results/v2/ohead_ablation/controller_dispositions/run_<id>.json`.
+
 Los informes derivados de cada reauditoría se escribirán en un archivo temporal
 y se promoverán de forma atómica. De este modo, una excepción no podrá hacer que
 el orquestador interprete como actual un informe producido por una pasada

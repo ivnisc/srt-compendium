@@ -93,7 +93,7 @@
     "after_each_completed_jobs": 100,
     "after": 5
   },
-  "assistant_equivalence_reports_required": 100,
+  "assistant_traceability_records_required": 100,
   "primary_metric": "U=byteRecvUniqueTotal/B_ref",
   "equivalence_method": "Welch TOST with 90 percent confidence interval",
   "directional_interval": "unpaired percentile bootstrap 95 percent confidence interval",

@@ -297,6 +297,17 @@ class OheadAblationAnalysisTests(unittest.TestCase):
             {"decision": "v2_activate"}, {"decision": "v2_restore"},
         ]))
 
+    def test_actuator_error_halts_before_integrity_replacement(self) -> None:
+        status = analysis.classify_audit_status(
+            False, True, "ready", True, "assistant", "not_required")
+        self.assertEqual(status, "actuator_application_error")
+
+    def test_retained_readiness_failure_remains_valid(self) -> None:
+        status = analysis.classify_audit_status(
+            True, False, "readiness_failure_retained", False, "assistant",
+            "not_applicable_controller_readiness_failure")
+        self.assertEqual(status, "valid")
+
     def test_atomic_json_replaces_previous_report(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "audit.json"

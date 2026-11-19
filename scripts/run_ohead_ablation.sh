@@ -11,6 +11,8 @@ logs="$results/logs"
 audits="$results/run_audits"
 equivalence_dir="$results/equivalence"
 disposition_dir="$results/equivalence_dispositions"
+controller_disposition_dir="$results/controller_dispositions"
+failure_disposition_dir="$results/failure_dispositions"
 
 if [[ ${V2_CPU_POLICY_ACTIVE:-no} != yes ]]; then
   exec "$script_dir/with_v2_cpu_policy.sh" "$0" "$@"
@@ -65,7 +67,8 @@ if [[ $actual_srt != "$expected_srt" ]]; then
 fi
 "$script_dir/check_v2_final_freeze.sh"
 
-mkdir -p "$results" "$logs" "$audits" "$equivalence_dir" "$disposition_dir"
+mkdir -p "$results" "$logs" "$audits" "$equivalence_dir" \
+  "$disposition_dir" "$controller_disposition_dir" "$failure_disposition_dir"
 python3 "$project_dir/analysis/generate_ohead_ablation_plan.py" \
   --config "$protocol" --output "$plan"
 EXPERIMENT_MATRIX_SHA256=$(hash_file "$protocol")
@@ -133,8 +136,19 @@ replacement_count() {
   local order=$1
   awk -F, -v order="$order" \
     'NR > 1 && $3 == "experimental" && $4 == order && \
-      $9 == "invalid_integrity" {count++} END {print count+0}' \
+      ($9 == "invalid_integrity" || $9 == "replacement_authorized") \
+      {count++} END {print count+0}' \
     "$progress"
+}
+
+blocking_outcome() {
+  local order=$1 attempt=$2
+  local prefix="plan_${order}_attempt_${attempt}_"
+  awk -F, -v prefix="$prefix" \
+    'NR > 1 && index($1, prefix) == 1 && \
+      ($9 == "runtime_failure" || $9 == "audit_error" || \
+       $9 == "actuator_application_error") {outcome=$9} \
+      END {print outcome}' "$progress"
 }
 
 report_status() {
@@ -143,6 +157,22 @@ import json
 import sys
 print(json.load(open(sys.argv[1])).get("status", "audit_error"))
 PY
+}
+
+report_field() {
+  python3 - "$1" "$2" <<'PY'
+import json
+import sys
+print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))
+PY
+}
+
+promote_audit_report() {
+  local temporary=$1 destination=$2
+  if [[ ! -f $temporary ]]; then
+    return 1
+  fi
+  mv -f "$temporary" "$destination"
 }
 
 run_slot() {
@@ -164,7 +194,30 @@ run_slot() {
     local integrity_report="$audits/${variant}_run_${run_id}_integrity.json"
     local equivalence=
     local disposition=
+    local controller_disposition=
+    local controller_status=
     local log="$logs/${variant}_run_${run_id}.log"
+
+    local blocked
+    blocked=$(blocking_outcome "$order" "$attempt")
+    if [[ -n $blocked ]]; then
+      local failure_disposition
+      failure_disposition="$failure_disposition_dir/${event_prefix}.json"
+      if ! python3 "$project_dir/analysis/analyze_ohead_ablation.py" \
+          --protocol "$protocol" \
+          --validate-failure-disposition "$failure_disposition" \
+          --plan-execution-order "$order" --attempt "$attempt" \
+          --run-id "$run_id" >/dev/null; then
+        echo "El intento $event_prefix sigue bloqueado por $blocked" >&2
+        echo "Falta una disposición válida: $failure_disposition" >&2
+        exit 1
+      fi
+      record_progress "${event_prefix}_replacement_authorized" experimental \
+        "$order" "$block" "$arm" "$variant" "$run_id" \
+        replacement_authorized "$run_dir" "$failure_disposition"
+      attempt=$((attempt + 1))
+      continue
+    fi
 
     if [[ ! -e $run_dir ]]; then
       echo "[$order/400] $arm, corrida $run_id"
@@ -176,19 +229,38 @@ run_slot() {
         echo "Falló la ejecución; la campaña se detiene para diagnóstico: $log" >&2
         exit 1
       fi
+    elif [[ ! -f $run_dir/run_metadata.csv ]]; then
+      record_progress "${event_prefix}_runtime_failure" experimental \
+        "$order" "$block" "$arm" "$variant" "$run_id" \
+        runtime_failure "$run_dir" ''
+      echo "La ejecución previa quedó incompleta: $run_dir" >&2
+      echo "Se requiere diagnóstico antes de autorizar un reemplazo" >&2
+      exit 1
     fi
 
+    if [[ $arm == assistant ]]; then
+      controller_disposition="$controller_disposition_dir/run_${run_id}.json"
+    fi
     integrity_args=(
       --protocol "$protocol" --plan "$plan" --audit-run "$run_dir"
       --arm "$arm" --variant "$variant" --run-id "$run_id"
-      --audit-output "$integrity_report" --integrity-only
+      --integrity-only
     )
+    if [[ $arm == assistant && -f $controller_disposition ]]; then
+      integrity_args+=(--controller-disposition "$controller_disposition")
+    fi
+    local integrity_temporary="${integrity_report}.tmp.$$"
+    if [[ -e $integrity_temporary ]]; then
+      echo "Existe un informe temporal inesperado: $integrity_temporary" >&2
+      exit 1
+    fi
     set +e
     python3 "$project_dir/analysis/analyze_ohead_ablation.py" \
-      "${integrity_args[@]}" >>"$log" 2>&1
+      "${integrity_args[@]}" --audit-output "$integrity_temporary" \
+      >>"$log" 2>&1
     integrity_rc=$?
     set -e
-    if [[ ! -f $integrity_report ]]; then
+    if ! promote_audit_report "$integrity_temporary" "$integrity_report"; then
       record_progress "${event_prefix}_audit_error" experimental "$order" \
         "$block" "$arm" "$variant" "$run_id" audit_error "$run_dir" ''
       echo "El auditor no produjo un informe; se detiene la campaña" >&2
@@ -213,7 +285,10 @@ run_slot() {
     if [[ $arm == assistant ]]; then
       equivalence="$equivalence_dir/run_${run_id}.json"
       disposition="$disposition_dir/run_${run_id}.json"
-      if [[ ! -f $equivalence ]]; then
+      controller_status=$(report_field "$integrity_report" \
+        controller_crosscheck_status)
+      if [[ $controller_status != readiness_failure_retained && \
+            ! -f $equivalence ]]; then
         set +e
         python3 "$project_dir/analysis/validate_v2_equivalence.py" \
             --run-dir "$run_dir" \
@@ -222,11 +297,16 @@ run_slot() {
         equivalence_rc=$?
         set -e
         if [[ $equivalence_rc -ne 0 && ! -f $equivalence ]]; then
-          record_progress "${event_prefix}_equivalence_audit_error" \
+          if [[ ! -f $disposition ]]; then
+            record_progress "${event_prefix}_equivalence_discrepancy" \
+              experimental "$order" "$block" "$arm" "$variant" \
+              "$run_id" equivalence_discrepancy "$run_dir" ''
+            echo "El replay requiere diagnóstico y disposición: $log" >&2
+            exit 1
+          fi
+          record_progress "${event_prefix}_reference_failure_retained" \
             experimental "$order" "$block" "$arm" "$variant" "$run_id" \
-            audit_error "$run_dir" ''
-          echo "El replay falló sin producir informe; se detiene la campaña" >&2
-          exit 1
+            reference_failure_retained "$run_dir" "$disposition"
         fi
       fi
     fi
@@ -234,7 +314,6 @@ run_slot() {
     audit_args=(
       --protocol "$protocol" --plan "$plan" --audit-run "$run_dir"
       --arm "$arm" --variant "$variant" --run-id "$run_id"
-      --audit-output "$audit_report"
     )
     if [[ -n $equivalence ]]; then
       audit_args+=(--equivalence "$equivalence")
@@ -242,12 +321,21 @@ run_slot() {
     if [[ -n $disposition && -f $disposition ]]; then
       audit_args+=(--equivalence-disposition "$disposition")
     fi
+    if [[ -n $controller_disposition && -f $controller_disposition ]]; then
+      audit_args+=(--controller-disposition "$controller_disposition")
+    fi
+    local audit_temporary="${audit_report}.tmp.$$"
+    if [[ -e $audit_temporary ]]; then
+      echo "Existe un informe temporal inesperado: $audit_temporary" >&2
+      exit 1
+    fi
     set +e
     python3 "$project_dir/analysis/analyze_ohead_ablation.py" \
-      "${audit_args[@]}" >>"$log" 2>&1
+      "${audit_args[@]}" --audit-output "$audit_temporary" \
+      >>"$log" 2>&1
     audit_rc=$?
     set -e
-    if [[ ! -f $audit_report ]]; then
+    if ! promote_audit_report "$audit_temporary" "$audit_report"; then
       record_progress "${event_prefix}_audit_error" experimental "$order" \
         "$block" "$arm" "$variant" "$run_id" audit_error "$run_dir" ''
       echo "El auditor no produjo el informe final; se detiene la campaña" >&2

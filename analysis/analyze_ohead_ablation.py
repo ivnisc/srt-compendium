@@ -157,7 +157,10 @@ def validated_disposition(path: Path | None, allowed: str,
                           expected: dict[str, object]) -> dict | None:
     if path is None or not path.is_file():
         return None
-    disposition = json.loads(path.read_text())
+    try:
+        disposition = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError, TypeError):
+        return None
     if disposition.get("decision") != allowed:
         return None
     if not str(disposition.get("justification", "")).strip():
@@ -186,6 +189,27 @@ def resolve_controller_crosscheck(
 
 def has_actuator_error(rows: list[dict[str, str]]) -> bool:
     return any(row.get("decision") == "set_ohead_error" for row in rows)
+
+
+def classify_audit_status(integrity_valid: bool, actuator_error: bool,
+                          controller_status: str, integrity_only: bool,
+                          arm: str, equivalence_status: str) -> str:
+    if actuator_error:
+        return "actuator_application_error"
+    if not integrity_valid:
+        return "invalid_integrity"
+    if controller_status == "discrepancy":
+        return "controller_crosscheck_discrepancy"
+    if integrity_only:
+        return "valid_integrity"
+    if arm == "assistant" and equivalence_status in (
+            "missing", "invalid_disposition"):
+        return "audit_error"
+    if arm == "assistant" and equivalence_status not in (
+            "equivalent", "reference_failure_retained",
+            "not_applicable_controller_readiness_failure"):
+        return "equivalence_discrepancy"
+    return "valid"
 
 
 def phase_bounds(run_dir: Path, duration_s: float) -> dict[str, tuple[float, float]]:
@@ -560,24 +584,9 @@ def audit_run(run_dir: Path, protocol: dict, arm: str, variant: str,
             else:
                 equivalence_status = "invalid_disposition"
 
-    if not integrity_valid:
-        status = "invalid_integrity"
-    elif actuator_error:
-        status = "actuator_application_error"
-    elif controller_status == "discrepancy":
-        status = "controller_crosscheck_discrepancy"
-    elif integrity_only:
-        status = "valid_integrity"
-    elif arm == "assistant" and equivalence_status == "missing":
-        status = "audit_error"
-    elif arm == "assistant" and equivalence_status == "invalid_disposition":
-        status = "audit_error"
-    elif arm == "assistant" and equivalence_status not in (
-            "equivalent", "reference_failure_retained",
-            "not_applicable_controller_readiness_failure"):
-        status = "equivalence_discrepancy"
-    else:
-        status = "valid"
+    status = classify_audit_status(
+        integrity_valid, actuator_error, controller_status, integrity_only,
+        arm, equivalence_status)
 
     record: dict[str, object] = {
         "status": status,
@@ -1098,6 +1107,8 @@ def final_analysis(args: argparse.Namespace, protocol: dict,
         "runs_per_arm": all(len(groups[arm]) == expected_runs for arm in groups),
         "single_clean_experiment_commit": len(commits) == 1 and bool(commits[0]),
         "clean_controls_accepted": clean["status"] == "accepted",
+        "assistant_traceability_records": len(groups["assistant"]) == int(
+            protocol["assistant_traceability_records_required"]),
         "assistant_traceability_resolved": all(
             row["equivalence_status"] in (
                 "equivalent", "reference_failure_retained",
