@@ -103,15 +103,20 @@ fi
 controller_selection_sha256=
 controller_config_sha256=
 case "$variant" in
-  vanilla|pilotvanilla|pilot2vanilla|finalvanilla|robust_*_vanilla|robust_*_clean|robust_*_guard|network_*_vanilla|network_*_guard)
+  vanilla|pilotvanilla|pilot2vanilla|finalvanilla|robust_*_vanilla|robust_*_clean|robust_*_guard|network_*_vanilla|network_*_guard|ablation_vanilla25|ablation_guard)
     sender_mode=vanilla
     active_ohead=$NOMINAL_OHEAD
+    ;;
+  ablation_const10)
+    sender_mode=vanilla
+    NOMINAL_OHEAD=10
+    active_ohead=10
     ;;
   fixed10|fixed25|fixed40)
     sender_mode=fixed
     active_ohead=${variant#fixed}
     ;;
-  oracle10)
+  oracle10|ablation_oracle10)
     sender_mode=fixed
     active_ohead=10
     ;;
@@ -159,7 +164,7 @@ case "$variant" in
     active_ohead=${ACTIVE_OHEAD:?falta ACTIVE_OHEAD}
     controller_selection_sha256=${V2_SELECTION_SHA256:?falta V2_SELECTION_SHA256}
     ;;
-  assistantv2final|assistantv2finalcheck)
+  assistantv2final|assistantv2finalcheck|ablation_assistant|ablation_check)
     sender_mode=assistant_v2
     controller_file="$project_dir/experiments/controller_v2_final.env"
     if [[ ! -f $controller_file ]]; then
