@@ -223,6 +223,88 @@ class OheadAblationAnalysisTests(unittest.TestCase):
         self.assertFalse(report["valid"])
         self.assertEqual(report["samples"], 19)
 
+    def test_active_maxbw_ignores_transition_sample(self) -> None:
+        rows = [
+            {"ohead_pct": "25", "mbpsMaxBW": "10.625"},
+            # la consulta de estadísticas precede al setsockopt de esta muestra
+            {"ohead_pct": "10", "mbpsMaxBW": "10.625"},
+            {"ohead_pct": "10", "mbpsMaxBW": "9.35"},
+            {"ohead_pct": "10", "mbpsMaxBW": "9.35"},
+        ]
+        report = analysis.active_maxbw_diagnostic(rows, 8_500_000.0)
+        self.assertEqual(report["status"], "matches")
+        self.assertEqual(report["active_samples"], 3)
+        self.assertEqual(report["usable_samples"], 2)
+
+    def test_short_actuation_is_descriptive_not_invalid(self) -> None:
+        rows = [
+            {"ohead_pct": "25", "mbpsMaxBW": "10.625"},
+            {"ohead_pct": "10", "mbpsMaxBW": "10.625"},
+            {"ohead_pct": "25", "mbpsMaxBW": "9.35"},
+        ]
+        report = analysis.active_maxbw_diagnostic(rows, 8_500_000.0)
+        self.assertEqual(report["status"], "unverified_short_actuation")
+
+    def test_failure_disposition_is_bound_to_attempt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "disposition.json"
+            path.write_text(json.dumps({
+                "decision": "infrastructure_failure_replace",
+                "plan_execution_order": 7,
+                "attempt": 0,
+                "run_id": 42,
+                "justification": "proceso receptor terminado por el host",
+            }))
+            accepted = analysis.validated_disposition(
+                path, "infrastructure_failure_replace", {
+                    "plan_execution_order": 7,
+                    "attempt": 0,
+                    "run_id": 42,
+                })
+            rejected = analysis.validated_disposition(
+                path, "infrastructure_failure_replace", {
+                    "plan_execution_order": 7,
+                    "attempt": 1,
+                    "run_id": 42,
+                })
+        self.assertIsNotNone(accepted)
+        self.assertIsNone(rejected)
+
+    def test_controller_readiness_disposition_retains_run(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "disposition.json"
+            path.write_text(json.dumps({
+                "decision": "retain_primary_controller_readiness_failure",
+                "run_id": 42,
+                "justification": "el binario congelado no marcó v2_ready",
+            }))
+            status, disposition = analysis.resolve_controller_crosscheck(
+                "assistant", False, path, self.protocol, "42")
+        self.assertEqual(status, "readiness_failure_retained")
+        self.assertIsNotNone(disposition)
+
+    def test_controller_readiness_without_disposition_halts(self) -> None:
+        status, disposition = analysis.resolve_controller_crosscheck(
+            "assistant", False, None, self.protocol, "42")
+        self.assertEqual(status, "discrepancy")
+        self.assertIsNone(disposition)
+
+    def test_set_ohead_error_is_detected(self) -> None:
+        self.assertTrue(analysis.has_actuator_error([
+            {"decision": ""}, {"decision": "set_ohead_error"},
+        ]))
+        self.assertFalse(analysis.has_actuator_error([
+            {"decision": "v2_activate"}, {"decision": "v2_restore"},
+        ]))
+
+    def test_atomic_json_replaces_previous_report(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "audit.json"
+            path.write_text('{"status":"old"}')
+            analysis.write_json_atomic(path, {"status": "valid"})
+            self.assertEqual(json.loads(path.read_text()), {"status": "valid"})
+            self.assertEqual(list(path.parent.glob(".audit.json.tmp.*")), [])
+
     def test_auditor_exception_has_distinct_status(self) -> None:
         with mock.patch.object(
                 analysis, "audit_run", side_effect=RuntimeError("boom")):

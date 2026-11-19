@@ -8,6 +8,7 @@ import csv
 import hashlib
 import json
 import math
+import os
 import random
 import statistics
 from collections import defaultdict
@@ -36,6 +37,16 @@ def file_hash(path: Path) -> str:
 def read_csv(path: Path) -> list[dict[str, str]]:
     with path.open(newline="") as stream:
         return list(csv.DictReader(stream))
+
+
+def write_json_atomic(path: Path, value: dict) -> None:
+    temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    try:
+        analyze.write_json(temporary, value)
+        temporary.replace(path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def finite_number(value: str | None) -> bool:
@@ -107,6 +118,74 @@ def transition_rows(rows: list[dict[str, str]]) -> list[dict[str, object]]:
             })
         previous = current
     return output
+
+
+def active_maxbw_diagnostic(rows: list[dict[str, str]],
+                            input_rate_bps: float) -> dict[str, object]:
+    usable = []
+    previous: int | None = None
+    active_samples = 0
+    for row in rows:
+        current = int(float(row["ohead_pct"]))
+        if current == 10:
+            active_samples += 1
+            if previous == 10 and float(row["mbpsMaxBW"]) > 0.0:
+                usable.append(float(row["mbpsMaxBW"]))
+        previous = current
+    if active_samples == 0:
+        return {"status": "not_activated", "active_samples": 0}
+    if not usable:
+        return {
+            "status": "unverified_short_actuation",
+            "active_samples": active_samples,
+            "usable_samples": 0,
+        }
+    expected = input_rate_bps / 1e6 * 1.10
+    observed = analyze.median(usable)
+    error = abs(observed - expected) / expected
+    return {
+        "status": "matches" if error <= 0.03 else "mismatch",
+        "active_samples": active_samples,
+        "usable_samples": len(usable),
+        "expected_mbps": expected,
+        "observed_median_mbps": observed,
+        "relative_error": error,
+    }
+
+
+def validated_disposition(path: Path | None, allowed: str,
+                          expected: dict[str, object]) -> dict | None:
+    if path is None or not path.is_file():
+        return None
+    disposition = json.loads(path.read_text())
+    if disposition.get("decision") != allowed:
+        return None
+    if not str(disposition.get("justification", "")).strip():
+        return None
+    if any(str(disposition.get(key)) != str(value)
+           for key, value in expected.items()):
+        return None
+    return disposition
+
+
+def resolve_controller_crosscheck(
+        arm: str, crosscheck_valid: bool, disposition_path: Path | None,
+        protocol: dict, run_id: str) -> tuple[str, dict | None]:
+    if arm != "assistant":
+        return "not_required", None
+    if crosscheck_valid:
+        return "ready", None
+    allowed = protocol["controller_crosscheck_policy"]["allowed_disposition"]
+    disposition = validated_disposition(
+        disposition_path, allowed, {"run_id": run_id})
+    return (
+        "readiness_failure_retained" if disposition else "discrepancy",
+        disposition,
+    )
+
+
+def has_actuator_error(rows: list[dict[str, str]]) -> bool:
+    return any(row.get("decision") == "set_ohead_error" for row in rows)
 
 
 def phase_bounds(run_dir: Path, duration_s: float) -> dict[str, tuple[float, float]]:
@@ -363,6 +442,7 @@ def audit_run(run_dir: Path, protocol: dict, arm: str, variant: str,
               run_id: str, protocol_hash: str, plan_hash: str,
               equivalence_path: Path | None = None,
               disposition_path: Path | None = None,
+              controller_disposition_path: Path | None = None,
               integrity_only: bool = False) -> dict[str, object]:
     required = (
         "run_metadata.csv", "tx_metadata.csv", "rx_metadata.csv",
@@ -431,6 +511,12 @@ def audit_run(run_dir: Path, protocol: dict, arm: str, variant: str,
             arm, values, transitions, final_ohead, changes_meta, bounds,
             sample_ms, int(float(tx_meta.get("v2_ready", "0"))))
 
+    actuator_error = has_actuator_error(tx_rows)
+    active_maxbw = (
+        active_maxbw_diagnostic(tx_rows, float(protocol["input_rate_bps"]))
+        if arm == "assistant" else {"status": "not_applicable"}
+    )
+
     integrity_criteria = {
         "required_files": True,
         **metadata_criteria,
@@ -449,9 +535,15 @@ def audit_run(run_dir: Path, protocol: dict, arm: str, variant: str,
     }
     integrity_valid = all(integrity_criteria.values())
 
+    controller_status, controller_disposition = resolve_controller_crosscheck(
+        arm, crosscheck_valid, controller_disposition_path, protocol, run_id)
+
     equivalence_status = "not_required"
     disposition: dict[str, object] | None = None
-    if arm == "assistant" and not integrity_only:
+    if arm == "assistant" and not integrity_only and \
+            controller_status == "readiness_failure_retained":
+        equivalence_status = "not_applicable_controller_readiness_failure"
+    elif arm == "assistant" and not integrity_only:
         if equivalence_path is None or not equivalence_path.is_file():
             equivalence_status = "missing"
         else:
@@ -459,22 +551,20 @@ def audit_run(run_dir: Path, protocol: dict, arm: str, variant: str,
             equivalence_status = str(equivalence.get("status", "missing"))
         if equivalence_status != "equivalent" and disposition_path is not None \
                 and disposition_path.is_file():
-            disposition = json.loads(disposition_path.read_text())
             allowed = protocol["equivalence_policy"][
                 "allowed_reference_disposition"]
-            disposition_valid = (
-                disposition.get("decision") == allowed
-                and str(disposition.get("run_id")) == str(run_id)
-                and bool(str(disposition.get("justification", "")).strip())
-            )
-            if disposition_valid:
+            disposition = validated_disposition(
+                disposition_path, allowed, {"run_id": run_id})
+            if disposition:
                 equivalence_status = "reference_failure_retained"
             else:
                 equivalence_status = "invalid_disposition"
 
     if not integrity_valid:
         status = "invalid_integrity"
-    elif arm == "assistant" and not crosscheck_valid:
+    elif actuator_error:
+        status = "actuator_application_error"
+    elif controller_status == "discrepancy":
         status = "controller_crosscheck_discrepancy"
     elif integrity_only:
         status = "valid_integrity"
@@ -483,7 +573,8 @@ def audit_run(run_dir: Path, protocol: dict, arm: str, variant: str,
     elif arm == "assistant" and equivalence_status == "invalid_disposition":
         status = "audit_error"
     elif arm == "assistant" and equivalence_status not in (
-            "equivalent", "reference_failure_retained"):
+            "equivalent", "reference_failure_retained",
+            "not_applicable_controller_readiness_failure"):
         status = "equivalence_discrepancy"
     else:
         status = "valid"
@@ -499,7 +590,11 @@ def audit_run(run_dir: Path, protocol: dict, arm: str, variant: str,
         "baseline": baseline,
         "network_timing": network_timing,
         "controller_crosscheck_valid": crosscheck_valid,
+        "controller_crosscheck_status": controller_status,
+        "controller_disposition": controller_disposition,
         "behavior": behavior,
+        "actuator_error": actuator_error,
+        "active_maxbw_diagnostic": active_maxbw,
         "equivalence_status": equivalence_status,
         "equivalence_disposition": disposition,
         "tx_schedule": tx_schedule,
@@ -838,10 +933,15 @@ def final_analysis(args: argparse.Namespace, protocol: dict,
                            f"run_{progress_row['run_id']}.json")
             disposition = (Path(args.results) / "equivalence_dispositions" /
                            f"run_{progress_row['run_id']}.json")
+            controller_disposition = (
+                Path(args.results) / "controller_dispositions" /
+                f"run_{progress_row['run_id']}.json")
+        else:
+            controller_disposition = None
         record = safe_audit_run(
             run_dir, protocol, planned["arm"], planned["variant"],
             progress_row["run_id"], protocol_hash, plan_hash, equivalence,
-            disposition)
+            disposition, controller_disposition)
         if record["status"] != "valid":
             raise SystemExit(f"La auditoría final rechazó {run_dir}")
         record.update({
@@ -1000,7 +1100,8 @@ def final_analysis(args: argparse.Namespace, protocol: dict,
         "clean_controls_accepted": clean["status"] == "accepted",
         "assistant_traceability_resolved": all(
             row["equivalence_status"] in (
-                "equivalent", "reference_failure_retained")
+                "equivalent", "reference_failure_retained",
+                "not_applicable_controller_readiness_failure")
             for row in groups["assistant"]),
     }
     report: dict[str, object] = {
@@ -1055,13 +1156,36 @@ def main() -> None:
     parser.add_argument("--run-id")
     parser.add_argument("--equivalence")
     parser.add_argument("--equivalence-disposition")
+    parser.add_argument("--controller-disposition")
+    parser.add_argument("--validate-failure-disposition")
+    parser.add_argument("--plan-execution-order")
+    parser.add_argument("--attempt")
     parser.add_argument("--integrity-only", action="store_true")
     parser.add_argument("--audit-output")
     args = parser.parse_args()
 
     protocol_path = Path(args.protocol)
-    plan_path = Path(args.plan)
     protocol = json.loads(protocol_path.read_text())
+    if args.validate_failure_disposition:
+        if not all((args.plan_execution_order, args.attempt, args.run_id)):
+            parser.error("la disposición requiere orden, intento y run-id")
+        allowed = protocol["failure_disposition_policy"]["allowed_decision"]
+        disposition = validated_disposition(
+            Path(args.validate_failure_disposition), allowed, {
+                "plan_execution_order": args.plan_execution_order,
+                "attempt": args.attempt,
+                "run_id": args.run_id,
+            })
+        report = {
+            "status": "valid_disposition" if disposition
+                else "invalid_disposition",
+            "disposition": disposition,
+        }
+        print(json.dumps(report, indent=2, sort_keys=True))
+        if disposition:
+            return
+        raise SystemExit(2)
+    plan_path = Path(args.plan)
     protocol_hash = file_hash(protocol_path)
     plan_hash = file_hash(plan_path)
     if args.audit_run:
@@ -1073,8 +1197,10 @@ def main() -> None:
             Path(args.equivalence) if args.equivalence else None,
             Path(args.equivalence_disposition)
                 if args.equivalence_disposition else None,
+            Path(args.controller_disposition)
+                if args.controller_disposition else None,
             args.integrity_only)
-        analyze.write_json(Path(args.audit_output), report)
+        write_json_atomic(Path(args.audit_output), report)
     else:
         report = final_analysis(args, protocol, protocol_hash, plan_hash)
     print(json.dumps(report, indent=2, sort_keys=True))
