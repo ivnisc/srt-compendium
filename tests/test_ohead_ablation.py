@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from collections import Counter
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -66,6 +67,20 @@ class OheadAblationPlanTests(unittest.TestCase):
 
 
 class OheadAblationAnalysisTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.protocol = json.loads(
+            (ROOT / "experiments" / "ohead_ablation_protocol.json").read_text()
+        )
+
+    @staticmethod
+    def transition(elapsed: float, previous: int, current: int,
+                   decision: str, confirmed: int = 0) -> dict[str, object]:
+        return {
+            "elapsed_ms": elapsed, "previous": previous, "current": current,
+            "decision": decision, "v2_confirmed": confirmed,
+        }
+
     def test_student_t_quantiles(self) -> None:
         self.assertAlmostEqual(
             analysis.student_t_ppf(0.95, 10.0), 1.8124611228, places=8)
@@ -131,6 +146,83 @@ class OheadAblationAnalysisTests(unittest.TestCase):
         self.assertEqual(result["low_pktRetransTotal"], 3.0)
         self.assertEqual(result["recovery_pktRetransTotal"], 4.0)
         self.assertEqual(result["low_pktRcvDropTotal"], 3.0)
+
+    def test_fixed_arm_assignments_are_checked(self) -> None:
+        bounds = {
+            "high": (0.0, 15050.0),
+            "low": (15050.0, 45070.0),
+            "recovery": (45070.0, 60000.0),
+        }
+        vanilla = analysis.arm_assignment_and_behavior(
+            "vanilla", [25, 25], [], 25, 0, bounds, 100.0, 0)
+        const10 = analysis.arm_assignment_and_behavior(
+            "const10", [10, 10], [], 10, 0, bounds, 100.0, 0)
+        oracle = analysis.arm_assignment_and_behavior(
+            "oracle10", [25, 10, 25], [
+                self.transition(15000.0, 25, 10, "fixed_activate"),
+                self.transition(45000.0, 10, 25, "fixed_restore"),
+            ], 25, 2, bounds, 100.0, 0)
+        self.assertTrue(vanilla[0])
+        self.assertTrue(const10[0])
+        self.assertTrue(oracle[0])
+
+    def test_early_assistant_activation_is_valid_and_marked(self) -> None:
+        bounds = {
+            "high": (0.0, 15050.0),
+            "low": (15050.0, 45070.0),
+            "recovery": (45070.0, 60000.0),
+        }
+        valid, behavior, crosscheck = analysis.arm_assignment_and_behavior(
+            "assistant", [25, 10, 25], [
+                self.transition(14000.0, 25, 10, "v2_activate", 1),
+                self.transition(46000.0, 10, 25, "v2_restore", 1),
+            ], 25, 2, bounds, 100.0, 1)
+        self.assertTrue(valid)
+        self.assertTrue(crosscheck)
+        self.assertTrue(behavior["early_activation"])
+        self.assertFalse(behavior["protocol_conforming"])
+
+    def test_assistant_without_restore_is_valid_and_marked(self) -> None:
+        bounds = {
+            "high": (0.0, 15050.0),
+            "low": (15050.0, 45070.0),
+            "recovery": (45070.0, 60000.0),
+        }
+        valid, behavior, crosscheck = analysis.arm_assignment_and_behavior(
+            "assistant", [25, 10, 10], [
+                self.transition(18000.0, 25, 10, "v2_activate", 1),
+            ], 25, 2, bounds, 100.0, 1)
+        self.assertTrue(valid)
+        self.assertTrue(crosscheck)
+        self.assertTrue(behavior["missing_restore"])
+        self.assertTrue(behavior["unexpected_transition_count"])
+
+    def test_ready_mismatch_halts_after_calibrable_baseline(self) -> None:
+        bounds = {
+            "high": (0.0, 15050.0),
+            "low": (15050.0, 45070.0),
+            "recovery": (45070.0, 60000.0),
+        }
+        valid, _, crosscheck = analysis.arm_assignment_and_behavior(
+            "assistant", [25, 25], [], 25, 0, bounds, 100.0, 0)
+        self.assertTrue(valid)
+        self.assertFalse(crosscheck)
+
+    def test_non_calibrable_baseline_rejects_const10_symmetrically(self) -> None:
+        rows = [
+            {"elapsed_ms": str(3000 + index * 100), "msRTT": "90"}
+            for index in range(19)
+        ]
+        report = analysis.baseline_calibration_audit(rows, self.protocol)
+        self.assertFalse(report["valid"])
+        self.assertEqual(report["samples"], 19)
+
+    def test_auditor_exception_has_distinct_status(self) -> None:
+        with mock.patch.object(
+                analysis, "audit_run", side_effect=RuntimeError("boom")):
+            report = analysis.safe_audit_run(Path("run"))
+        self.assertEqual(report["status"], "audit_error")
+        self.assertEqual(report["error_type"], "RuntimeError")
 
 
 if __name__ == "__main__":

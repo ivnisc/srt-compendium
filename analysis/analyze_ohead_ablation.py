@@ -244,9 +244,126 @@ def metadata_matches(run: dict[str, str], tx: dict[str, str], protocol: dict,
     }
 
 
+def baseline_calibration_audit(rows: list[dict[str, str]],
+                               protocol: dict) -> dict[str, object]:
+    config = protocol["baseline_integrity"]
+    begin = float(config["begin_ms"])
+    end = float(config["end_ms"])
+    baseline = rows_in_phase(rows, begin, end)
+    positive = [row for row in baseline
+                if finite_number(row.get("msRTT"))
+                and float(row["msRTT"]) > 0.0]
+    all_positive = len(positive) == len(baseline)
+    minimum = int(config["minimum_samples"])
+    return {
+        "valid": len(baseline) >= minimum and all_positive,
+        "samples": len(baseline),
+        "positive_rtt_samples": len(positive),
+        "minimum_samples": minimum,
+        "begin_ms": begin,
+        "end_ms": end,
+    }
+
+
+def network_timing_audit(bounds: dict[str, tuple[float, float]],
+                         protocol: dict) -> dict[str, object]:
+    expected_low = float(protocol["phase_high_s"]) * 1000.0
+    expected_recovery = (
+        float(protocol["phase_high_s"]) + float(protocol["phase_low_s"])
+    ) * 1000.0
+    actual_low = bounds["low"][0]
+    actual_recovery = bounds["recovery"][0]
+    errors = {
+        "low_ms": actual_low - expected_low,
+        "recovery_ms": actual_recovery - expected_recovery,
+    }
+    tolerance = float(protocol["network_timing_tolerance_ms"])
+    return {
+        "valid": all(abs(value) <= tolerance for value in errors.values()),
+        "tolerance_ms": tolerance,
+        "errors_ms": errors,
+    }
+
+
+def arm_assignment_and_behavior(
+        arm: str, values: list[int], transitions: list[dict[str, object]],
+        final_ohead: int, changes_meta: int,
+        bounds: dict[str, tuple[float, float]], sample_ms: float,
+        v2_ready: int) -> tuple[bool, dict[str, object], bool]:
+    pairs = [(item["previous"], item["current"]) for item in transitions]
+    decisions = [item["decision"] for item in transitions]
+    behavior: dict[str, object] = {
+        "transition_count_series": len(transitions),
+        "controller_changes_metadata": changes_meta,
+        "final_ohead_metadata": final_ohead,
+    }
+    crosscheck_valid = True
+    if not values:
+        return False, behavior, crosscheck_valid
+    if arm == "vanilla":
+        valid = (set(values) == {25} and not transitions
+                 and final_ohead == 25 and changes_meta == 0)
+        behavior["protocol_conforming"] = valid
+        return valid, behavior, crosscheck_valid
+    if arm == "const10":
+        valid = (set(values) == {10} and not transitions
+                 and final_ohead == 10 and changes_meta == 0)
+        behavior["protocol_conforming"] = valid
+        return valid, behavior, crosscheck_valid
+    if arm == "oracle10":
+        expected_times = [bounds["low"][0], bounds["recovery"][0]]
+        transition_times = [float(item["elapsed_ms"]) for item in transitions]
+        tolerance = max(250.0, 2.0 * sample_ms)
+        timing_errors = [actual - target for actual, target in
+                         zip(transition_times, expected_times)]
+        timing_ok = (
+            len(transition_times) == 2
+            and len(timing_errors) == 2
+            and all(abs(value) <= tolerance for value in timing_errors)
+        )
+        valid = (
+            set(values) == {10, 25}
+            and pairs == [(25, 10), (10, 25)]
+            and decisions == ["fixed_activate", "fixed_restore"]
+            and timing_ok and final_ohead == 25 and changes_meta == 2
+        )
+        behavior.update({
+            "protocol_conforming": valid,
+            "transition_timing_error_ms": timing_errors,
+        })
+        return valid, behavior, crosscheck_valid
+
+    activation = [item for item in transitions if item["current"] == 10]
+    restoration = [item for item in transitions if item["current"] == 25]
+    early = any(float(item["elapsed_ms"]) < bounds["low"][0]
+                for item in activation)
+    missing_restore = bool(activation) and not restoration
+    no_activation = not activation
+    standard_cycle = (
+        pairs == [(25, 10), (10, 25)]
+        and decisions == ["v2_activate", "v2_restore"]
+        and not early
+        and int(activation[0]["v2_confirmed"]) == 1
+    )
+    protocol_conforming = no_activation or standard_cycle
+    behavior.update({
+        "no_activation": no_activation,
+        "early_activation": early,
+        "missing_restore": missing_restore,
+        "unexpected_transition_count": len(transitions) not in (0, 2),
+        "standard_cycle": standard_cycle,
+        "protocol_conforming": protocol_conforming,
+    })
+    assignment_integrity = values[0] == 25 and set(values).issubset({10, 25})
+    crosscheck_valid = v2_ready == 1
+    return assignment_integrity, behavior, crosscheck_valid
+
+
 def audit_run(run_dir: Path, protocol: dict, arm: str, variant: str,
               run_id: str, protocol_hash: str, plan_hash: str,
-              equivalence_path: Path | None = None) -> dict[str, object]:
+              equivalence_path: Path | None = None,
+              disposition_path: Path | None = None,
+              integrity_only: bool = False) -> dict[str, object]:
     required = (
         "run_metadata.csv", "tx_metadata.csv", "rx_metadata.csv",
         "tx_stats.csv", "rx_stats.csv", "network_events.csv",
@@ -254,13 +371,13 @@ def audit_run(run_dir: Path, protocol: dict, arm: str, variant: str,
     missing = [name for name in required if not (run_dir / name).is_file()]
     if missing:
         return {
-            "status": "invalid", "run_dir": str(run_dir), "arm": arm,
-            "criteria": {"required_files": False}, "missing": missing,
+            "status": "invalid_integrity", "run_dir": str(run_dir),
+            "arm": arm, "integrity_criteria": {"required_files": False},
+            "missing": missing,
         }
 
     run = analyze.read_key_value(run_dir / "run_metadata.csv")
     tx_meta = analyze.read_key_value(run_dir / "tx_metadata.csv")
-    rx_meta = analyze.read_key_value(run_dir / "rx_metadata.csv")
     tx_rows = read_csv(run_dir / "tx_stats.csv")
     rx_rows = read_csv(run_dir / "rx_stats.csv")
     duration = float(protocol["duration_s"])
@@ -271,7 +388,6 @@ def audit_run(run_dir: Path, protocol: dict, arm: str, variant: str,
     tx_schedule = schedule_audit(tx_rows, sample_ms, duration)
     rx_schedule = schedule_audit(rx_rows, sample_ms, duration)
     transitions = transition_rows(tx_rows) if tx_rows else []
-    expected = expected_arm(protocol, arm)
     values = [int(float(row["ohead_pct"])) for row in tx_rows]
     maxbw_errors = []
     for row in tx_rows:
@@ -297,91 +413,25 @@ def audit_run(run_dir: Path, protocol: dict, arm: str, variant: str,
         and abs(payload_duration - duration) < 0.010
     )
 
+    network_timing: dict[str, object] = {"valid": False}
     try:
         bounds = phase_bounds(run_dir, duration)
         bounds_valid = True
+        network_timing = network_timing_audit(bounds, protocol)
     except (OSError, KeyError, ValueError):
         bounds = {}
         bounds_valid = False
 
-    arm_valid = False
-    arm_details: dict[str, object] = {}
-    if values:
-        if arm == "vanilla":
-            arm_valid = (set(values) == {25} and not transitions
-                         and final_ohead == 25 and changes_meta == 0)
-        elif arm == "const10":
-            arm_valid = (set(values) == {10} and not transitions
-                         and final_ohead == 10 and changes_meta == 0)
-        elif arm == "oracle10" and bounds_valid:
-            expected_times = [bounds["low"][0], bounds["recovery"][0]]
-            transition_times = [float(item["elapsed_ms"]) for item in transitions]
-            tolerance = max(250.0, 2.0 * sample_ms)
-            timing_ok = (
-                len(transition_times) == 2 and
-                all(abs(actual - target) <= tolerance
-                    for actual, target in zip(transition_times, expected_times))
-            )
-            arm_valid = (
-                set(values) == {10, 25}
-                and [(item["previous"], item["current"])
-                     for item in transitions] == [(25, 10), (10, 25)]
-                and [item["decision"] for item in transitions] ==
-                    ["fixed_activate", "fixed_restore"]
-                and timing_ok and final_ohead == 25 and changes_meta == 2
-            )
-            arm_details["transition_timing_error_ms"] = [
-                actual - target
-                for actual, target in zip(transition_times, expected_times)
-            ]
-        elif arm == "assistant" and bounds_valid:
-            transition_pairs = [(item["previous"], item["current"])
-                                for item in transitions]
-            no_change = (
-                not transitions and set(values) == {25}
-                and changes_meta == 0
-            )
-            two_changes = (
-                transition_pairs == [(25, 10), (10, 25)]
-                and changes_meta == 2
-                and float(transitions[0]["elapsed_ms"]) >= bounds["low"][0]
-                and transitions[0]["decision"] == "v2_activate"
-                and transitions[1]["decision"] == "v2_restore"
-                and int(transitions[0]["v2_confirmed"]) == 1
-            )
-            active_rows = [row for row in tx_rows
-                           if int(float(row["ohead_pct"])) == 10]
-            expected_maxbw = protocol["input_rate_bps"] / 1e6 * 1.10
-            observed_maxbw = analyze.median([
-                float(row["mbpsMaxBW"]) for row in active_rows
-                if float(row["mbpsMaxBW"]) > 0.0
-            ])
-            maxbw_error = (
-                abs(observed_maxbw - expected_maxbw) / expected_maxbw
-                if active_rows else 0.0
-            )
-            arm_valid = (
-                (no_change or (two_changes and maxbw_error <= 0.03))
-                and final_ohead == 25
-                and int(float(tx_meta.get("v2_ready", "0"))) == 1
-                and all(float(row["msRTT"]) > 0.0 for row in tx_rows)
-            )
-            arm_details.update({
-                "assistant_no_change": no_change,
-                "assistant_two_changes": two_changes,
-                "active_maxbw_relative_error": maxbw_error,
-            })
+    baseline = baseline_calibration_audit(tx_rows, protocol)
+    arm_integrity = False
+    behavior: dict[str, object] = {}
+    crosscheck_valid = True
+    if bounds_valid:
+        arm_integrity, behavior, crosscheck_valid = arm_assignment_and_behavior(
+            arm, values, transitions, final_ohead, changes_meta, bounds,
+            sample_ms, int(float(tx_meta.get("v2_ready", "0"))))
 
-    equivalence_valid = True
-    if arm == "assistant":
-        equivalence_valid = bool(equivalence_path and equivalence_path.is_file())
-        if equivalence_valid:
-            equivalence_valid = (
-                json.loads(equivalence_path.read_text()).get("status") ==
-                "equivalent"
-            )
-
-    criteria = {
+    integrity_criteria = {
         "required_files": True,
         **metadata_criteria,
         "payload_complete": payload_complete,
@@ -392,25 +442,72 @@ def audit_run(run_dir: Path, protocol: dict, arm: str, variant: str,
         "tx_schedule_continuous": bool(tx_schedule.get("valid")),
         "rx_schedule_continuous": bool(rx_schedule.get("valid")),
         "network_phase_bounds": bounds_valid,
+        "network_timing": bool(network_timing.get("valid")),
+        "baseline_calibrable": bool(baseline["valid"]),
         "maxbw_matches_ohead": bool(maxbw_errors) and maxbw_error_p99 <= 0.03,
-        "arm_behavior": arm_valid,
-        "python_cpp_equivalence": equivalence_valid,
+        "assigned_arm_applied": arm_integrity,
     }
-    status = "valid" if all(criteria.values()) else "invalid"
+    integrity_valid = all(integrity_criteria.values())
+
+    equivalence_status = "not_required"
+    disposition: dict[str, object] | None = None
+    if arm == "assistant" and not integrity_only:
+        if equivalence_path is None or not equivalence_path.is_file():
+            equivalence_status = "missing"
+        else:
+            equivalence = json.loads(equivalence_path.read_text())
+            equivalence_status = str(equivalence.get("status", "missing"))
+        if equivalence_status != "equivalent" and disposition_path is not None \
+                and disposition_path.is_file():
+            disposition = json.loads(disposition_path.read_text())
+            allowed = protocol["equivalence_policy"][
+                "allowed_reference_disposition"]
+            disposition_valid = (
+                disposition.get("decision") == allowed
+                and str(disposition.get("run_id")) == str(run_id)
+                and bool(str(disposition.get("justification", "")).strip())
+            )
+            if disposition_valid:
+                equivalence_status = "reference_failure_retained"
+            else:
+                equivalence_status = "invalid_disposition"
+
+    if not integrity_valid:
+        status = "invalid_integrity"
+    elif arm == "assistant" and not crosscheck_valid:
+        status = "controller_crosscheck_discrepancy"
+    elif integrity_only:
+        status = "valid_integrity"
+    elif arm == "assistant" and equivalence_status == "missing":
+        status = "audit_error"
+    elif arm == "assistant" and equivalence_status == "invalid_disposition":
+        status = "audit_error"
+    elif arm == "assistant" and equivalence_status not in (
+            "equivalent", "reference_failure_retained"):
+        status = "equivalence_discrepancy"
+    else:
+        status = "valid"
+
     record: dict[str, object] = {
         "status": status,
         "run_dir": str(run_dir),
         "arm": arm,
         "variant": variant,
         "run_id": run_id,
-        "criteria": criteria,
+        "integrity_criteria": integrity_criteria,
+        "integrity_valid": integrity_valid,
+        "baseline": baseline,
+        "network_timing": network_timing,
+        "controller_crosscheck_valid": crosscheck_valid,
+        "behavior": behavior,
+        "equivalence_status": equivalence_status,
+        "equivalence_disposition": disposition,
         "tx_schedule": tx_schedule,
         "rx_schedule": rx_schedule,
         "transitions": transitions,
         "maxbw_relative_error_p99": maxbw_error_p99,
-        **arm_details,
     }
-    if status == "valid":
+    if integrity_valid:
         tx_summary = analyze.summarize_stats(run_dir / "tx_stats.csv")
         rx_summary = analyze.summarize_stats(run_dir / "rx_stats.csv")
         metrics = phase_metrics(tx_rows, rx_rows, bounds)
@@ -431,6 +528,19 @@ def audit_run(run_dir: Path, protocol: dict, arm: str, variant: str,
         record["metrics"] = metrics
         record["experiment_git_commit"] = run.get("experiment_git_commit", "")
     return record
+
+
+def safe_audit_run(*args, **kwargs) -> dict[str, object]:
+    try:
+        return audit_run(*args, **kwargs)
+    except Exception as error:  # el informe debe sobrevivir a un fallo del auditor
+        run_dir = kwargs.get("run_dir", args[0] if args else "")
+        return {
+            "status": "audit_error",
+            "run_dir": str(run_dir),
+            "error_type": type(error).__name__,
+            "error": str(error),
+        }
 
 
 def beta_continued_fraction(a: float, b: float, x: float) -> float:
@@ -722,12 +832,16 @@ def final_analysis(args: argparse.Namespace, protocol: dict,
             raise SystemExit(f"El progreso no coincide con el plan en {order}")
         run_dir = Path(progress_row["run_dir"])
         equivalence = None
+        disposition = None
         if planned["arm"] == "assistant":
             equivalence = (Path(args.results) / "equivalence" /
                            f"run_{progress_row['run_id']}.json")
-        record = audit_run(
+            disposition = (Path(args.results) / "equivalence_dispositions" /
+                           f"run_{progress_row['run_id']}.json")
+        record = safe_audit_run(
             run_dir, protocol, planned["arm"], planned["variant"],
-            progress_row["run_id"], protocol_hash, plan_hash, equivalence)
+            progress_row["run_id"], protocol_hash, plan_hash, equivalence,
+            disposition)
         if record["status"] != "valid":
             raise SystemExit(f"La auditoría final rechazó {run_dir}")
         record.update({
@@ -779,6 +893,22 @@ def final_analysis(args: argparse.Namespace, protocol: dict,
             assistant_u, const10_u, iterations, seed + 1),
     })
 
+    conforming_assistant = [
+        row for row in groups["assistant"]
+        if bool(row["behavior"].get("protocol_conforming"))  # type: ignore[union-attr]
+    ]
+    behavior_sensitivity = {
+        "scope": "secondary",
+        "included_assistant_runs": len(conforming_assistant),
+        "excluded_assistant_runs": len(groups["assistant"]) -
+            len(conforming_assistant),
+        "comparison": (
+            comparison(conforming_assistant, groups["const10"],
+                       iterations, seed + 20)
+            if conforming_assistant else None
+        ),
+    }
+
     secondary_pairs = (
         ("const10_minus_vanilla", "const10", "vanilla"),
         ("oracle10_minus_vanilla", "oracle10", "vanilla"),
@@ -815,6 +945,20 @@ def final_analysis(args: argparse.Namespace, protocol: dict,
                 for phase in PHASES
             },
         }
+
+    assistant_behavior_fields = (
+        "no_activation", "early_activation", "missing_restore",
+        "unexpected_transition_count", "standard_cycle",
+        "protocol_conforming",
+    )
+    assistant_behavior = {
+        field: sum(bool(row["behavior"].get(field))  # type: ignore[union-attr]
+                   for row in groups["assistant"])
+        for field in assistant_behavior_fields
+    }
+    equivalence_statuses: dict[str, int] = defaultdict(int)
+    for row in groups["assistant"]:
+        equivalence_statuses[str(row["equivalence_status"])] += 1
 
     order_diagnostics = {}
     for arm, rows in groups.items():
@@ -854,8 +998,9 @@ def final_analysis(args: argparse.Namespace, protocol: dict,
         "runs_per_arm": all(len(groups[arm]) == expected_runs for arm in groups),
         "single_clean_experiment_commit": len(commits) == 1 and bool(commits[0]),
         "clean_controls_accepted": clean["status"] == "accepted",
-        "assistant_equivalence_reports": all(
-            row["criteria"]["python_cpp_equivalence"]  # type: ignore[index]
+        "assistant_traceability_resolved": all(
+            row["equivalence_status"] in (
+                "equivalent", "reference_failure_retained")
             for row in groups["assistant"]),
     }
     report: dict[str, object] = {
@@ -867,11 +1012,15 @@ def final_analysis(args: argparse.Namespace, protocol: dict,
         "experiment_git_commits": commits,
         "primary": primary,
         "secondary_descriptive": secondary,
+        "behavior_sensitivity": behavior_sensitivity,
+        "assistant_behavior": assistant_behavior,
+        "assistant_equivalence_statuses": dict(equivalence_statuses),
         "arms": arm_summary,
         "order_sensitivity": order_diagnostics,
         "clean_controls": clean,
-        "invalid_attempts": sum(
-            row["kind"] == "experimental" and row["outcome"] != "valid"
+        "invalid_integrity_attempts": sum(
+            row["kind"] == "experimental"
+            and row["outcome"] == "invalid_integrity"
             for row in progress),
     }
     analyze.write_json(Path(args.output), report)
@@ -882,6 +1031,11 @@ def final_analysis(args: argparse.Namespace, protocol: dict,
             "execution_order", "block", "position", "arm", "variant",
             "run_id", "run_dir")}
         base.update(row["metrics"])  # type: ignore[arg-type]
+        base.update({
+            f"behavior_{key}": value
+            for key, value in row["behavior"].items()  # type: ignore[union-attr]
+        })
+        base["equivalence_status"] = row["equivalence_status"]
         flat_rows.append(base)
     analyze.write_csv(Path(args.runs_csv), flat_rows)
     return report
@@ -900,6 +1054,8 @@ def main() -> None:
     parser.add_argument("--variant")
     parser.add_argument("--run-id")
     parser.add_argument("--equivalence")
+    parser.add_argument("--equivalence-disposition")
+    parser.add_argument("--integrity-only", action="store_true")
     parser.add_argument("--audit-output")
     args = parser.parse_args()
 
@@ -911,16 +1067,20 @@ def main() -> None:
     if args.audit_run:
         if not all((args.arm, args.variant, args.run_id, args.audit_output)):
             parser.error("--audit-run requiere brazo, variante, run-id y audit-output")
-        report = audit_run(
+        report = safe_audit_run(
             Path(args.audit_run), protocol, args.arm, args.variant, args.run_id,
             protocol_hash, plan_hash,
-            Path(args.equivalence) if args.equivalence else None)
+            Path(args.equivalence) if args.equivalence else None,
+            Path(args.equivalence_disposition)
+                if args.equivalence_disposition else None,
+            args.integrity_only)
         analyze.write_json(Path(args.audit_output), report)
     else:
         report = final_analysis(args, protocol, protocol_hash, plan_hash)
     print(json.dumps(report, indent=2, sort_keys=True))
-    if report["status"] not in ("valid", "accepted"):
-        raise SystemExit(1)
+    if report["status"] in ("valid", "valid_integrity", "accepted"):
+        return
+    raise SystemExit(1 if report["status"] == "invalid_integrity" else 2)
 
 
 if __name__ == "__main__":
