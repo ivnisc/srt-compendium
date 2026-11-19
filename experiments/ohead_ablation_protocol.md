@@ -265,3 +265,23 @@ persistente de `mbpsMaxBW` durante una actuación suficientemente larga se trata
 como falla de aplicación del actuador y detendrá la campaña. Una actuación
 demasiado breve para comprobar el techo efectivo conservará carácter
 descriptivo y no invalidará la corrida.
+
+## Enmienda 4 (anterior a los datos)
+
+Fecha: 19 de noviembre de 2026. Protocolo anterior: commit `ac3e786`.
+Implementación revisada: commit `ac3e786`.
+
+La disposición asociada al reemplazo de un control limpio deberá clasificar el
+alcance de la falla mediante `prior_interval_impact`. El valor `isolated`
+indicará que la evidencia del log permite acotar el problema al propio control.
+El valor `possible` indicará que la degradación del host también pudo afectar las
+corridas experimentales ejecutadas desde el último control aprobado. La
+justificación deberá fundamentar esta clasificación con el log o con evidencia
+de infraestructura y no con el valor de `U` ni con métricas de resultado.
+
+Ambas clasificaciones conservarán los intentos originales y requerirán una
+disposición antes de reanudar. Si el impacto se clasifica como `possible`, el
+contraste primario mantendrá las cuatrocientas corridas predefinidas y el
+informe añadirá un análisis secundario que excluya el intervalo potencialmente
+afectado. Esta sensibilidad se declarará por separado y no sustituirá ni
+recalibrará el contraste principal.

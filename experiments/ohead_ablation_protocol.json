@@ -1,5 +1,5 @@
 {
-  "protocol_id": "v2_ohead_ablation_1c",
+  "protocol_id": "v2_ohead_ablation_1d",
   "status": "frozen_before_execution",
   "amendments": [
     {
@@ -21,6 +21,13 @@
       "base_protocol_commit": "bce7260",
       "reviewed_implementation_commit": "bce7260",
       "reason": "Audit clean controls immediately and require documented replacements without modifying failed directories"
+    },
+    {
+      "id": 4,
+      "date": "2026-11-19",
+      "base_protocol_commit": "ac3e786",
+      "reviewed_implementation_commit": "ac3e786",
+      "reason": "Predeclare the treatment of prior experimental intervals when a clean control failure may reflect host degradation"
     }
   ],
   "purpose": "Separate the effect of temporal adaptation from the effect of using SRTO_OHEADBW=10",
@@ -143,10 +150,17 @@
       "control_slot",
       "attempt",
       "run_id",
+      "prior_interval_impact",
       "justification"
     ],
+    "allowed_prior_interval_impact": [
+      "isolated",
+      "possible"
+    ],
     "all_failures_halt_without_disposition": true,
-    "accepted_replacement_is_linked_to_logical_slot": true
+    "accepted_replacement_is_linked_to_logical_slot": true,
+    "possible_impact_retains_primary_analysis": true,
+    "possible_impact_requires_secondary_interval_sensitivity": true
   },
   "controller_crosscheck_policy": {
     "allowed_disposition": "retain_primary_controller_readiness_failure",

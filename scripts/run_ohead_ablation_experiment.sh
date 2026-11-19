@@ -10,7 +10,7 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 project_dir=$(cd "$script_dir/.." && pwd)
 source "$project_dir/experiments/v2.env"
 
-PROTOCOL_VERSION=v2_ohead_ablation_1c
+PROTOCOL_VERSION=v2_ohead_ablation_1d
 RESULTS_ROOT=${ABLATION_RESULTS_ROOT:-"$project_dir/results/v2/ohead_ablation"}
 
 export PROTOCOL_VERSION INPUT_RATE_BPS HIGH_CAPACITY_PERCENT LOW_CAPACITY_PERCENT
