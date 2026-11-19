@@ -202,3 +202,32 @@ la excepción. No se admite una disposición que excluya por sí sola la corrida
 Los fallos de ejecución o del propio auditor cuyo origen no esté demostrado
 detendrán la campaña. No se reemplazarán hasta establecer que corresponden a
 una causa de integridad independiente del tratamiento.
+
+## Enmienda 2 (anterior a los datos)
+
+Fecha: 19 de noviembre de 2026. Protocolo anterior: commit `cda175a`.
+Implementación revisada: commit `a04b972`.
+
+La reanudación de la campaña no podrá convertir por sí sola un fallo de
+ejecución o del auditor en una corrida reemplazable. Después de cualquiera de
+esos fallos, el trabajo permanecerá bloqueado hasta que exista una disposición
+asociada al orden del plan, intento e identificador de corrida. La única decisión
+admitida será `infrastructure_failure_replace`, acompañada de una justificación.
+Una vez autorizada, el reemplazo utilizará un identificador nuevo y conservará
+intactos el directorio y el log originales.
+
+Si una línea base calibrable produce `v2_ready=0`, la campaña se detendrá. El
+diagnóstico podrá conservar la corrida mediante la disposición
+`retain_primary_controller_readiness_failure`. Esta decisión reconoce como
+tratamiento al binario congelado: la falta de inicialización pasa a ser una
+conducta observada, la corrida permanece en el contraste primario y la
+equivalencia con el replay Python se declara no aplicable para ese caso.
+
+Una decisión `set_ohead_error` detendrá la campaña como falla de aplicación del
+actuador. No autorizará un reemplazo hasta que una disposición de infraestructura
+documente la causa.
+
+Los informes derivados de cada reauditoría se escribirán en un archivo temporal
+y se promoverán de forma atómica. De este modo, una excepción no podrá hacer que
+el orquestador interprete como actual un informe producido por una pasada
+anterior.

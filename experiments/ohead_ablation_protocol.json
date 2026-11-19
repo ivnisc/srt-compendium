@@ -1,5 +1,5 @@
 {
-  "protocol_id": "v2_ohead_ablation_1a",
+  "protocol_id": "v2_ohead_ablation_1b",
   "status": "frozen_before_execution",
   "amendments": [
     {
@@ -7,6 +7,13 @@
       "date": "2026-11-18",
       "base_protocol_commit": "7685170",
       "reason": "Separate run integrity from treatment behavior before collecting data"
+    },
+    {
+      "id": 2,
+      "date": "2026-11-19",
+      "base_protocol_commit": "cda175a",
+      "reviewed_implementation_commit": "a04b972",
+      "reason": "Require explicit dispositions before resuming unresolved execution, audit, or controller readiness failures"
     }
   ],
   "purpose": "Separate the effect of temporal adaptation from the effect of using SRTO_OHEADBW=10",
@@ -105,6 +112,33 @@
     "python_or_replay_failure_retains_run_in_primary": true,
     "independent_infrastructure_failure_uses_integrity_criteria": true,
     "allowed_reference_disposition": "retain_primary_reference_failure"
+  },
+  "failure_disposition_policy": {
+    "allowed_decision": "infrastructure_failure_replace",
+    "required_fields": [
+      "decision",
+      "plan_execution_order",
+      "attempt",
+      "run_id",
+      "justification"
+    ],
+    "runtime_or_audit_failure_halts_without_disposition": true,
+    "authorized_failure_is_replaced_with_new_run_id": true
+  },
+  "controller_crosscheck_policy": {
+    "allowed_disposition": "retain_primary_controller_readiness_failure",
+    "required_fields": [
+      "decision",
+      "run_id",
+      "justification"
+    ],
+    "retained_run_remains_in_primary": true,
+    "python_equivalence_not_applicable_after_retention": true
+  },
+  "actuator_error_policy": {
+    "decision_value": "set_ohead_error",
+    "halts_for_diagnosis": true,
+    "never_replaced_without_infrastructure_disposition": true
   },
   "secondary_inference": "descriptive_only"
 }
