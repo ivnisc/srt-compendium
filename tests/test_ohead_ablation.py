@@ -126,6 +126,33 @@ class OheadAblationAnalysisTests(unittest.TestCase):
         rows.append({"elapsed_ms": "60417", "sample_lateness_us": "0"})
         self.assertFalse(analysis.schedule_audit(rows, 100.0, 60.0)["valid"])
 
+    def test_phase_bounds_accept_submillisecond_negative_origin(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "network_events.csv"
+            path.write_text(
+                "phase,monotonic_s,sender_elapsed_ms,rate_kbit\n"
+                "high,201399.70,-0.555,11900\n"
+                "low,201414.75,15049.445,8840\n"
+                "recovery,201444.80,45099.445,11900\n"
+            )
+            bounds = analysis.phase_bounds(Path(directory), 60.0, 250.0)
+        self.assertEqual(bounds["high"][0], -0.555)
+        timing = analysis.network_timing_audit(bounds, self.protocol)
+        self.assertTrue(timing["valid"])
+        self.assertEqual(timing["errors_ms"]["high_ms"], -0.555)
+
+    def test_phase_bounds_reject_origin_outside_tolerance(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "network_events.csv"
+            path.write_text(
+                "phase,monotonic_s,sender_elapsed_ms,rate_kbit\n"
+                "high,1.0,-300.0,11900\n"
+                "low,16.0,15000.0,8840\n"
+                "recovery,46.0,45000.0,11900\n"
+            )
+            with self.assertRaises(ValueError):
+                analysis.phase_bounds(Path(directory), 60.0, 250.0)
+
     def test_phase_metrics_difference_cumulative_counters(self) -> None:
         tx = [
             {

@@ -226,20 +226,23 @@ def classify_audit_status(integrity_valid: bool, actuator_error: bool,
     return "valid"
 
 
-def phase_bounds(run_dir: Path, duration_s: float) -> dict[str, tuple[float, float]]:
+def phase_bounds(run_dir: Path, duration_s: float,
+                 start_tolerance_ms: float) -> dict[str, tuple[float, float]]:
     events = read_csv(run_dir / "network_events.csv")
     by_phase = {row["phase"]: float(row["sender_elapsed_ms"])
                 for row in events}
     required = {"high", "low", "recovery"}
     if set(by_phase) != required:
         raise ValueError("network_events no contiene las tres fases")
+    high = by_phase["high"]
     low = by_phase["low"]
     recovery = by_phase["recovery"]
     end = duration_s * 1000.0
-    if not (0.0 <= by_phase["high"] < low < recovery < end + 1000.0):
+    if not (abs(high) <= start_tolerance_ms
+            and high < low < recovery < end + 1000.0):
         raise ValueError("límites temporales de fase inválidos")
     return {
-        "high": (0.0, low),
+        "high": (high, low),
         "low": (low, recovery),
         "recovery": (recovery, end),
     }
@@ -391,6 +394,7 @@ def network_timing_audit(bounds: dict[str, tuple[float, float]],
     actual_low = bounds["low"][0]
     actual_recovery = bounds["recovery"][0]
     errors = {
+        "high_ms": bounds["high"][0],
         "low_ms": actual_low - expected_low,
         "recovery_ms": actual_recovery - expected_recovery,
     }
@@ -536,7 +540,9 @@ def audit_run(run_dir: Path, protocol: dict, arm: str, variant: str,
 
     network_timing: dict[str, object] = {"valid": False}
     try:
-        bounds = phase_bounds(run_dir, duration)
+        bounds = phase_bounds(
+            run_dir, duration,
+            float(protocol["network_timing_tolerance_ms"]))
         bounds_valid = True
         network_timing = network_timing_audit(bounds, protocol)
     except (OSError, KeyError, ValueError):
