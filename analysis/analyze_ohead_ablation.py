@@ -442,23 +442,26 @@ def arm_assignment_and_behavior(
                 for item in activation)
     missing_restore = bool(activation) and not restoration
     no_activation = not activation
+    readiness_failure = v2_ready != 1
     standard_cycle = (
         pairs == [(25, 10), (10, 25)]
         and decisions == ["v2_activate", "v2_restore"]
         and not early
         and int(activation[0]["v2_confirmed"]) == 1
     )
-    protocol_conforming = no_activation or standard_cycle
+    protocol_conforming = (no_activation or standard_cycle) and \
+        not readiness_failure
     behavior.update({
         "no_activation": no_activation,
         "early_activation": early,
         "missing_restore": missing_restore,
         "unexpected_transition_count": len(transitions) not in (0, 2),
+        "readiness_failure": readiness_failure,
         "standard_cycle": standard_cycle,
         "protocol_conforming": protocol_conforming,
     })
     assignment_integrity = values[0] == 25 and set(values).issubset({10, 25})
-    crosscheck_valid = v2_ready == 1
+    crosscheck_valid = not readiness_failure
     return assignment_integrity, behavior, crosscheck_valid
 
 
@@ -535,11 +538,13 @@ def audit_run(run_dir: Path, protocol: dict, arm: str, variant: str,
             arm, values, transitions, final_ohead, changes_meta, bounds,
             sample_ms, int(float(tx_meta.get("v2_ready", "0"))))
 
-    actuator_error = has_actuator_error(tx_rows)
     active_maxbw = (
         active_maxbw_diagnostic(tx_rows, float(protocol["input_rate_bps"]))
         if arm == "assistant" else {"status": "not_applicable"}
     )
+    actuator_error = has_actuator_error(tx_rows)
+    actuator_maxbw_mismatch = active_maxbw["status"] == "mismatch"
+    actuator_failure = actuator_error or actuator_maxbw_mismatch
 
     integrity_criteria = {
         "required_files": True,
@@ -585,7 +590,7 @@ def audit_run(run_dir: Path, protocol: dict, arm: str, variant: str,
                 equivalence_status = "invalid_disposition"
 
     status = classify_audit_status(
-        integrity_valid, actuator_error, controller_status, integrity_only,
+        integrity_valid, actuator_failure, controller_status, integrity_only,
         arm, equivalence_status)
 
     record: dict[str, object] = {
@@ -603,6 +608,7 @@ def audit_run(run_dir: Path, protocol: dict, arm: str, variant: str,
         "controller_disposition": controller_disposition,
         "behavior": behavior,
         "actuator_error": actuator_error,
+        "actuator_maxbw_mismatch": actuator_maxbw_mismatch,
         "active_maxbw_diagnostic": active_maxbw,
         "equivalence_status": equivalence_status,
         "equivalence_disposition": disposition,
@@ -818,90 +824,193 @@ def comparison(a: list[dict[str, object]], b: list[dict[str, object]],
     }
 
 
+def expected_control_slots(protocol: dict) -> list[str]:
+    controls = protocol["clean_controls"]
+    interval = int(controls["after_each_completed_jobs"])
+    total = int(protocol["valid_experimental_runs"])
+    return (
+        [f"pre_{index}" for index in range(1, int(controls["before"]) + 1)]
+        + [f"mid_{index}" for index in range(interval, total + 1, interval)]
+        + [f"post_{index}" for index in range(1, int(controls["after"]) + 1)]
+    )
+
+
+def audit_clean_control_run(
+        run_dir: Path, protocol: dict, protocol_hash: str, plan_hash: str,
+        run_id: str) -> dict[str, object]:
+    required_names = (
+        "run_metadata.csv", "tx_metadata.csv", "rx_metadata.csv",
+        "tx_stats.csv", "rx_stats.csv", "network_events.csv",
+    )
+    missing = [name for name in required_names
+               if not (run_dir / name).is_file()]
+    if missing:
+        return {
+            "status": "invalid_control", "valid": False,
+            "run_id": run_id, "run_dir": str(run_dir),
+            "criteria": {"required_files": False}, "missing": missing,
+        }
+
+    run = analyze.read_key_value(run_dir / "run_metadata.csv")
+    tx_meta = analyze.read_key_value(run_dir / "tx_metadata.csv")
+    tx_rows = read_csv(run_dir / "tx_stats.csv")
+    rx_rows = read_csv(run_dir / "rx_stats.csv")
+    tx_summary = analyze.summarize_stats(run_dir / "tx_stats.csv")
+    rx_summary = analyze.summarize_stats(run_dir / "rx_stats.csv")
+    events = read_csv(run_dir / "network_events.csv")
+    governors = run.get("cpu_governors", "unknown")
+    cpu_ok = (
+        governors == "performance" or (
+            governors == "unavailable"
+            and run.get("host_virtualization") not in ("", "none", "unknown")
+            and run.get("cpu_frequency_control") == "unavailable"
+        )
+    )
+    payload = float(tx_meta.get("payload_bytes_read", "nan"))
+    budget = float(tx_meta.get("payload_budget_bytes", "nan"))
+    sent = float(tx_meta.get("payload_bytes_sent", "nan"))
+    zero_events = all(float(value) == 0.0 for value in (
+        tx_summary["pktSndLossTotal"], tx_summary["pktRetransTotal"],
+        tx_summary["pktSndDropTotal"], rx_summary["pktRcvLossTotal"],
+        rx_summary["pktRcvDropTotal"], rx_summary["pktRcvBelated_sum"],
+        rx_summary["pktRcvRetrans_sum"],
+    ))
+    criteria = {
+        "required_files": True,
+        "protocol_version": run.get("protocol_version") == protocol["protocol_id"],
+        "scenario": run.get("scenario") == "clean",
+        "variant": run.get("variant") == "ablation_guard",
+        "run_id": run.get("run_id") == run_id,
+        "source": run.get("source_sha256") == protocol["expected_source_sha256"],
+        "srt_commit": run.get("srt_git_commit") ==
+            protocol["expected_srt_git_commit"],
+        "binary": run.get("experiment_binary_sha256") ==
+            protocol["expected_binary_sha256"],
+        "protocol_hash": run.get("experiment_matrix_sha256") == protocol_hash,
+        "plan_hash": run.get("experiment_plan_sha256") == plan_hash,
+        "clean_tree": run.get("experiment_git_dirty") == "no",
+        "cpu_policy": cpu_ok,
+        "cpu_affinity": (
+            run.get("sender_cpu") == protocol["sender_cpu"]
+            and run.get("receiver_cpu") == protocol["receiver_cpu"]
+        ),
+        "payload": (
+            payload == budget == sent
+            and payload == float(protocol["expected_payload_bytes"])
+        ),
+        "duration": abs(float(tx_meta["payload_send_duration_s"]) -
+                        float(protocol["duration_s"])) < 0.010,
+        "network_events_empty": not events,
+        "finite_series": stats_are_finite(tx_rows) and stats_are_finite(rx_rows),
+        "monotonic_counters": (
+            counters_are_monotonic(tx_rows) and counters_are_monotonic(rx_rows)
+        ),
+        "sampling_schedule": (
+            bool(schedule_audit(tx_rows, protocol["sample_ms"],
+                                protocol["duration_s"])["valid"])
+            and bool(schedule_audit(rx_rows, protocol["sample_ms"],
+                                    protocol["duration_s"])["valid"])
+        ),
+        "zero_loss_retransmission_belated_drop": zero_events,
+        "clean_rtt": float(tx_summary["rtt_p99_ms"]) < 1.0,
+    }
+    valid = all(criteria.values())
+    return {
+        "status": "valid_control" if valid else "invalid_control",
+        "valid": valid,
+        "run_id": run_id,
+        "run_dir": str(run_dir),
+        "criteria": criteria,
+        "byteSentUniqueTotal": float(tx_summary["byteSentUniqueTotal"]),
+        "payload_bytes_read": payload,
+        "experiment_git_commit": run.get("experiment_git_commit", ""),
+    }
+
+
+def safe_audit_clean_control_run(*args, **kwargs) -> dict[str, object]:
+    try:
+        return audit_clean_control_run(*args, **kwargs)
+    except Exception as error:
+        run_dir = kwargs.get("run_dir", args[0] if args else "")
+        return {
+            "status": "audit_error", "valid": False,
+            "run_dir": str(run_dir), "error_type": type(error).__name__,
+            "error": str(error),
+        }
+
+
 def audit_clean_controls(results: Path, protocol: dict,
-                         protocol_hash: str, plan_hash: str) -> dict[str, object]:
-    expected_ids = ([f"pre_{index}" for index in range(1, 6)] +
-                    [f"mid_{index}" for index in (100, 200, 300, 400)] +
-                    [f"post_{index}" for index in range(1, 6)])
-    records = []
-    for run_id in expected_ids:
-        run_dir = results / "clean" / "ablation_guard" / f"run_{run_id}"
-        required = all((run_dir / name).is_file() for name in (
-            "run_metadata.csv", "tx_metadata.csv", "rx_metadata.csv",
-            "tx_stats.csv", "rx_stats.csv", "network_events.csv"))
-        if not required:
-            records.append({"run_id": run_id, "valid": False,
-                            "reason": "missing_files"})
+                         protocol_hash: str, plan_hash: str,
+                         progress: list[dict[str, str]]) -> dict[str, object]:
+    expected_slots = expected_control_slots(protocol)
+    accepted = [row for row in progress
+                if row["kind"] == "control" and row["outcome"] == "valid"]
+    by_slot: dict[str, list[dict[str, str]]] = defaultdict(list)
+    for row in accepted:
+        by_slot[row["plan_execution_order"]].append(row)
+    progress_complete = (
+        set(by_slot) == set(expected_slots)
+        and all(len(by_slot[slot]) == 1 for slot in expected_slots)
+    )
+
+    records: list[dict[str, object]] = []
+    for slot in expected_slots:
+        rows = by_slot.get(slot, [])
+        if len(rows) != 1:
+            records.append({
+                "control_slot": slot, "valid": False,
+                "status": "missing_or_duplicate_progress",
+            })
             continue
-        run = analyze.read_key_value(run_dir / "run_metadata.csv")
-        tx_meta = analyze.read_key_value(run_dir / "tx_metadata.csv")
-        tx_rows = read_csv(run_dir / "tx_stats.csv")
-        rx_rows = read_csv(run_dir / "rx_stats.csv")
-        tx_summary = analyze.summarize_stats(run_dir / "tx_stats.csv")
-        rx_summary = analyze.summarize_stats(run_dir / "rx_stats.csv")
-        events = read_csv(run_dir / "network_events.csv")
-        governors = run.get("cpu_governors", "unknown")
-        cpu_ok = (
-            governors == "performance" or (
-                governors == "unavailable"
-                and run.get("host_virtualization") not in ("", "none", "unknown")
-                and run.get("cpu_frequency_control") == "unavailable"
+        progress_row = rows[0]
+        run_id = progress_row["run_id"]
+        record = safe_audit_clean_control_run(
+            Path(progress_row["run_dir"]), protocol, protocol_hash, plan_hash,
+            run_id)
+        replacement_used = run_id != slot
+        replacement_attempt = 0
+        if replacement_used:
+            suffix = run_id.removeprefix(f"{slot}_r")
+            replacement_attempt = int(suffix) if suffix.isdigit() else -1
+        expected_authorizations = {
+            f"control_{slot}_attempt_{attempt}_replacement_authorized"
+            for attempt in range(max(0, replacement_attempt))
+        }
+        actual_authorizations = {
+            row["event_id"] for row in progress
+            if row["kind"] == "control"
+            and row["plan_execution_order"] == slot
+            and row["outcome"] == "replacement_authorized"
+        }
+        replacement_documented = (
+            not replacement_used or (
+                replacement_attempt > 0
+                and expected_authorizations.issubset(actual_authorizations)
             )
         )
-        payload = float(tx_meta.get("payload_bytes_read", "nan"))
-        budget = float(tx_meta.get("payload_budget_bytes", "nan"))
-        sent = float(tx_meta.get("payload_bytes_sent", "nan"))
-        zero_events = all(float(value) == 0.0 for value in (
-            tx_summary["pktSndLossTotal"], tx_summary["pktRetransTotal"],
-            tx_summary["pktSndDropTotal"], rx_summary["pktRcvLossTotal"],
-            rx_summary["pktRcvDropTotal"], rx_summary["pktRcvBelated_sum"],
-            rx_summary["pktRcvRetrans_sum"],
-        ))
-        valid = all((
-            run.get("protocol_version") == protocol["protocol_id"],
-            run.get("scenario") == "clean",
-            run.get("variant") == "ablation_guard",
-            run.get("run_id") == run_id,
-            run.get("source_sha256") == protocol["expected_source_sha256"],
-            run.get("srt_git_commit") == protocol["expected_srt_git_commit"],
-            run.get("experiment_binary_sha256") == protocol["expected_binary_sha256"],
-            run.get("experiment_matrix_sha256") == protocol_hash,
-            run.get("experiment_plan_sha256") == plan_hash,
-            run.get("experiment_git_dirty") == "no",
-            cpu_ok,
-            run.get("sender_cpu") == protocol["sender_cpu"],
-            run.get("receiver_cpu") == protocol["receiver_cpu"],
-            payload == budget == sent,
-            payload == float(protocol["expected_payload_bytes"]),
-            abs(float(tx_meta["payload_send_duration_s"]) -
-                float(protocol["duration_s"])) < 0.010,
-            not events,
-            stats_are_finite(tx_rows), stats_are_finite(rx_rows),
-            counters_are_monotonic(tx_rows), counters_are_monotonic(rx_rows),
-            bool(schedule_audit(tx_rows, protocol["sample_ms"],
-                                protocol["duration_s"])["valid"]),
-            bool(schedule_audit(rx_rows, protocol["sample_ms"],
-                                protocol["duration_s"])["valid"]),
-            zero_events,
-            float(tx_summary["rtt_p99_ms"]) < 1.0,
-        ))
-        records.append({
-            "run_id": run_id, "valid": valid,
-            "byteSentUniqueTotal": float(tx_summary["byteSentUniqueTotal"]),
-            "payload_bytes_read": payload,
+        record.update({
+            "control_slot": slot,
+            "replacement_used": replacement_used,
+            "replacement_attempt": replacement_attempt,
+            "replacement_documented": replacement_documented,
         })
-    valid_rows = [row for row in records if row["valid"]]
+        record["valid"] = bool(record.get("valid")) and replacement_documented
+        records.append(record)
+
+    valid_rows = [row for row in records if row.get("valid")]
     sent = [float(row["byteSentUniqueTotal"]) for row in valid_rows]
     payload = [float(row["payload_bytes_read"]) for row in valid_rows]
     stable = (
-        len(valid_rows) == len(expected_ids)
+        progress_complete
+        and len(valid_rows) == len(expected_slots)
         and analyze.coefficient_of_variation(sent) < 0.001
         and analyze.coefficient_of_variation(payload) < 0.001
     )
     return {
         "status": "accepted" if stable else "rejected",
-        "expected_runs": len(expected_ids),
+        "expected_runs": len(expected_slots),
         "valid_runs": len(valid_rows),
+        "progress_complete": progress_complete,
         "byteSentUniqueTotal_cv": analyze.coefficient_of_variation(sent),
         "payload_bytes_read_cv": analyze.coefficient_of_variation(payload),
         "runs": records,
@@ -1057,7 +1166,7 @@ def final_analysis(args: argparse.Namespace, protocol: dict,
 
     assistant_behavior_fields = (
         "no_activation", "early_activation", "missing_restore",
-        "unexpected_transition_count", "standard_cycle",
+        "unexpected_transition_count", "readiness_failure", "standard_cycle",
         "protocol_conforming",
     )
     assistant_behavior = {
@@ -1098,7 +1207,7 @@ def final_analysis(args: argparse.Namespace, protocol: dict,
     }
 
     clean = audit_clean_controls(
-        Path(args.results), protocol, protocol_hash, plan_hash)
+        Path(args.results), protocol, protocol_hash, plan_hash, progress)
     commits = sorted({str(row["experiment_git_commit"]) for row in records})
     criteria = {
         "protocol_frozen": protocol.get("status") == "frozen_before_execution",
@@ -1162,6 +1271,7 @@ def main() -> None:
     parser.add_argument("--output", default="results/v2/ohead_ablation/comparison.json")
     parser.add_argument("--runs-csv", default="results/v2/ohead_ablation/runs.csv")
     parser.add_argument("--audit-run")
+    parser.add_argument("--audit-clean-run")
     parser.add_argument("--arm")
     parser.add_argument("--variant")
     parser.add_argument("--run-id")
@@ -1170,6 +1280,7 @@ def main() -> None:
     parser.add_argument("--controller-disposition")
     parser.add_argument("--validate-failure-disposition")
     parser.add_argument("--plan-execution-order")
+    parser.add_argument("--control-slot")
     parser.add_argument("--attempt")
     parser.add_argument("--integrity-only", action="store_true")
     parser.add_argument("--audit-output")
@@ -1178,15 +1289,27 @@ def main() -> None:
     protocol_path = Path(args.protocol)
     protocol = json.loads(protocol_path.read_text())
     if args.validate_failure_disposition:
-        if not all((args.plan_execution_order, args.attempt, args.run_id)):
-            parser.error("la disposición requiere orden, intento y run-id")
-        allowed = protocol["failure_disposition_policy"]["allowed_decision"]
-        disposition = validated_disposition(
-            Path(args.validate_failure_disposition), allowed, {
+        if not all((args.attempt, args.run_id)):
+            parser.error("la disposición requiere intento y run-id")
+        if args.control_slot:
+            allowed = protocol["control_failure_disposition_policy"][
+                "allowed_decision"]
+            expected = {
+                "control_slot": args.control_slot,
+                "attempt": args.attempt,
+                "run_id": args.run_id,
+            }
+        else:
+            if not args.plan_execution_order:
+                parser.error("la disposición experimental requiere orden")
+            allowed = protocol["failure_disposition_policy"]["allowed_decision"]
+            expected = {
                 "plan_execution_order": args.plan_execution_order,
                 "attempt": args.attempt,
                 "run_id": args.run_id,
-            })
+            }
+        disposition = validated_disposition(
+            Path(args.validate_failure_disposition), allowed, expected)
         report = {
             "status": "valid_disposition" if disposition
                 else "invalid_disposition",
@@ -1199,7 +1322,14 @@ def main() -> None:
     plan_path = Path(args.plan)
     protocol_hash = file_hash(protocol_path)
     plan_hash = file_hash(plan_path)
-    if args.audit_run:
+    if args.audit_clean_run:
+        if not all((args.run_id, args.audit_output)):
+            parser.error("--audit-clean-run requiere run-id y audit-output")
+        report = safe_audit_clean_control_run(
+            Path(args.audit_clean_run), protocol, protocol_hash, plan_hash,
+            args.run_id)
+        write_json_atomic(Path(args.audit_output), report)
+    elif args.audit_run:
         if not all((args.arm, args.variant, args.run_id, args.audit_output)):
             parser.error("--audit-run requiere brazo, variante, run-id y audit-output")
         report = safe_audit_run(
@@ -1215,7 +1345,8 @@ def main() -> None:
     else:
         report = final_analysis(args, protocol, protocol_hash, plan_hash)
     print(json.dumps(report, indent=2, sort_keys=True))
-    if report["status"] in ("valid", "valid_integrity", "accepted"):
+    if report["status"] in (
+            "valid", "valid_integrity", "valid_control", "accepted"):
         return
     raise SystemExit(1 if report["status"] == "invalid_integrity" else 2)
 

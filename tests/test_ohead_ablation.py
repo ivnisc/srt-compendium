@@ -209,10 +209,12 @@ class OheadAblationAnalysisTests(unittest.TestCase):
             "low": (15050.0, 45070.0),
             "recovery": (45070.0, 60000.0),
         }
-        valid, _, crosscheck = analysis.arm_assignment_and_behavior(
+        valid, behavior, crosscheck = analysis.arm_assignment_and_behavior(
             "assistant", [25, 25], [], 25, 0, bounds, 100.0, 0)
         self.assertTrue(valid)
         self.assertFalse(crosscheck)
+        self.assertTrue(behavior["readiness_failure"])
+        self.assertFalse(behavior["protocol_conforming"])
 
     def test_non_calibrable_baseline_rejects_const10_symmetrically(self) -> None:
         rows = [
@@ -245,6 +247,20 @@ class OheadAblationAnalysisTests(unittest.TestCase):
         report = analysis.active_maxbw_diagnostic(rows, 8_500_000.0)
         self.assertEqual(report["status"], "unverified_short_actuation")
 
+    def test_active_maxbw_mismatch_halts_actuator(self) -> None:
+        rows = [
+            {"ohead_pct": "25", "mbpsMaxBW": "10.625"},
+            {"ohead_pct": "10", "mbpsMaxBW": "10.625"},
+            {"ohead_pct": "10", "mbpsMaxBW": "10.625"},
+            {"ohead_pct": "10", "mbpsMaxBW": "10.625"},
+        ]
+        diagnostic = analysis.active_maxbw_diagnostic(rows, 8_500_000.0)
+        self.assertEqual(diagnostic["status"], "mismatch")
+        status = analysis.classify_audit_status(
+            True, diagnostic["status"] == "mismatch", "ready", True,
+            "assistant", "not_required")
+        self.assertEqual(status, "actuator_application_error")
+
     def test_failure_disposition_is_bound_to_attempt(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "disposition.json"
@@ -269,6 +285,80 @@ class OheadAblationAnalysisTests(unittest.TestCase):
                 })
         self.assertIsNotNone(accepted)
         self.assertIsNone(rejected)
+
+    def test_control_disposition_is_bound_to_logical_slot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "disposition.json"
+            path.write_text(json.dumps({
+                "decision": "infrastructure_failure_replace",
+                "control_slot": "pre_1",
+                "attempt": 0,
+                "run_id": "pre_1",
+                "justification": "latencia anómala del host confirmada en el log",
+            }))
+            accepted = analysis.validated_disposition(
+                path, "infrastructure_failure_replace", {
+                    "control_slot": "pre_1", "attempt": 0,
+                    "run_id": "pre_1",
+                })
+            rejected = analysis.validated_disposition(
+                path, "infrastructure_failure_replace", {
+                    "control_slot": "pre_2", "attempt": 0,
+                    "run_id": "pre_1",
+                })
+        self.assertIsNotNone(accepted)
+        self.assertIsNone(rejected)
+
+    def test_expected_clean_control_slots(self) -> None:
+        slots = analysis.expected_control_slots(self.protocol)
+        self.assertEqual(slots[:5], [f"pre_{index}" for index in range(1, 6)])
+        self.assertEqual(
+            slots[5:9], ["mid_100", "mid_200", "mid_300", "mid_400"])
+        self.assertEqual(
+            slots[-5:], [f"post_{index}" for index in range(1, 6)])
+        self.assertEqual(len(slots), 14)
+
+    def test_clean_control_replacement_requires_documentation(self) -> None:
+        slots = analysis.expected_control_slots(self.protocol)
+        progress = []
+        for slot in slots:
+            run_id = "pre_1_r1" if slot == "pre_1" else slot
+            progress.append({
+                "event_id": f"control_{slot}_attempt_0_valid",
+                "kind": "control", "outcome": "valid",
+                "plan_execution_order": slot, "run_id": run_id,
+                "run_dir": f"/runs/{run_id}",
+            })
+
+        def valid_control(_path, _protocol, _protocol_hash, _plan_hash, run_id):
+            return {
+                "status": "valid_control", "valid": True,
+                "run_id": run_id, "byteSentUniqueTotal": 100.0,
+                "payload_bytes_read": 100.0,
+            }
+
+        with mock.patch.object(
+                analysis, "safe_audit_clean_control_run",
+                side_effect=valid_control):
+            rejected = analysis.audit_clean_controls(
+                Path("/results"), self.protocol, "protocol", "plan", progress)
+            progress.append({
+                "event_id": "control_pre_1_attempt_0_replacement_authorized",
+                "kind": "control", "outcome": "replacement_authorized",
+                "plan_execution_order": "pre_1", "run_id": "pre_1",
+                "run_dir": "/runs/pre_1",
+            })
+            accepted = analysis.audit_clean_controls(
+                Path("/results"), self.protocol, "protocol", "plan", progress)
+        self.assertEqual(rejected["status"], "rejected")
+        self.assertEqual(accepted["status"], "accepted")
+
+    def test_missing_clean_control_files_are_rejected_immediately(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            report = analysis.audit_clean_control_run(
+                Path(directory), self.protocol, "protocol", "plan", "pre_1")
+        self.assertEqual(report["status"], "invalid_control")
+        self.assertFalse(report["valid"])
 
     def test_controller_readiness_disposition_retains_run(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
