@@ -255,6 +255,8 @@ corrida física, además de justificar la causa mediante el log o la evidencia d
 infraestructura. El intento original no se borrará ni se moverá. El reemplazo
 usará un identificador físico nuevo y el análisis final resolverá cada control
 lógico a partir del intento aceptado y de su trazabilidad.
+Las disposiciones se almacenarán en
+`results/v2/ohead_ablation/failure_dispositions/control_<slot>_attempt_<intento>.json`.
 
 Una corrida asistida conservada con `v2_ready=0` seguirá formando parte del
 contraste primario, pero se marcará como `readiness_failure` y quedará fuera del

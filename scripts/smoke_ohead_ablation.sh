@@ -41,6 +41,19 @@ export EXPERIMENT_MATRIX_SHA256=$(hash_file "$protocol")
 export EXPERIMENT_PLAN_SHA256=$(hash_file "$plan")
 export ABLATION_RESULTS_ROOT="$results"
 
+control_id=smoke_pre
+control_dir="$results/clean/ablation_guard/run_$control_id"
+control_log="$results/logs/control_${control_id}.log"
+control_audit="$results/audits/control_${control_id}.json"
+if [[ ! -f $control_dir/run_metadata.csv ]]; then
+  "$script_dir/run_ohead_ablation_experiment.sh" \
+    clean ablation_guard "$control_id" >"$control_log" 2>&1
+fi
+python3 "$project_dir/analysis/analyze_ohead_ablation.py" \
+  --protocol "$protocol" --plan "$plan" --audit-clean-run "$control_dir" \
+  --run-id "$control_id" --audit-output "$control_audit" \
+  >>"$control_log" 2>&1
+
 while IFS=, read -r order _block _position arm variant run_id; do
   [[ $order == execution_order ]] && continue
   (( order <= 4 )) || break

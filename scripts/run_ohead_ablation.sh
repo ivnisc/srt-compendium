@@ -95,34 +95,119 @@ record_progress() {
     >> "$progress"
 }
 
+control_is_complete() {
+  local slot=$1
+  awk -F, -v slot="$slot" \
+    'NR > 1 && $3 == "control" && $4 == slot && $9 == "valid" \
+      {found=1} END {exit !found}' "$progress"
+}
+
+control_replacement_count() {
+  local slot=$1
+  awk -F, -v slot="$slot" \
+    'NR > 1 && $3 == "control" && $4 == slot && \
+      $9 == "replacement_authorized" {count++} END {print count+0}' \
+    "$progress"
+}
+
+control_blocking_outcome() {
+  local slot=$1 attempt=$2
+  local prefix="control_${slot}_attempt_${attempt}_"
+  awk -F, -v prefix="$prefix" \
+    'NR > 1 && index($1, prefix) == 1 && \
+      ($9 == "runtime_failure" || $9 == "audit_error" || \
+       $9 == "invalid_control") {outcome=$9} END {print outcome}' \
+    "$progress"
+}
+
 run_control() {
-  local run_id=$1
-  local run_dir="$results/clean/ablation_guard/run_$run_id"
-  local event_id="control_$run_id"
-  if awk -F, -v event="$event_id" \
-    'NR > 1 && $1 == event && $9 == "complete" {found=1} END {exit !found}' \
-    "$progress"; then
+  local slot=$1
+  if control_is_complete "$slot"; then
+    echo "control $slot ya aceptado"
     return
   fi
-  if [[ -f $run_dir/run_metadata.csv ]]; then
-    record_progress "$event_id" control '' '' '' ablation_guard \
-      "$run_id" complete "$run_dir" ''
-    return
-  fi
-  if [[ -e $run_dir ]]; then
-    echo "Control incompleto; debe revisarse antes de reanudar: $run_dir" >&2
+  local attempt
+  attempt=$(control_replacement_count "$slot")
+  while (( attempt < 10 )); do
+    local run_id=$slot
+    if (( attempt > 0 )); then
+      run_id="${slot}_r${attempt}"
+    fi
+    local event_prefix="control_${slot}_attempt_${attempt}"
+    local run_dir="$results/clean/ablation_guard/run_$run_id"
+    local audit_report="$audits/control_${slot}_run_${run_id}.json"
+    local log="$logs/control_${run_id}.log"
+    local control_audit_rc control_status
+    local blocked
+    blocked=$(control_blocking_outcome "$slot" "$attempt")
+    if [[ -n $blocked ]]; then
+      local failure_disposition
+      failure_disposition="$failure_disposition_dir/${event_prefix}.json"
+      if ! python3 "$project_dir/analysis/analyze_ohead_ablation.py" \
+          --protocol "$protocol" \
+          --validate-failure-disposition "$failure_disposition" \
+          --control-slot "$slot" --attempt "$attempt" \
+          --run-id "$run_id" >/dev/null; then
+        echo "El control $event_prefix sigue bloqueado por $blocked" >&2
+        echo "Falta una disposición válida: $failure_disposition" >&2
+        exit 1
+      fi
+      record_progress "${event_prefix}_replacement_authorized" control \
+        "$slot" '' '' ablation_guard "$run_id" replacement_authorized \
+        "$run_dir" "$failure_disposition"
+      attempt=$((attempt + 1))
+      continue
+    fi
+
+    if [[ ! -e $run_dir ]]; then
+      echo "control $slot, intento $attempt"
+      if ! "$script_dir/run_ohead_ablation_experiment.sh" \
+          clean ablation_guard "$run_id" >"$log" 2>&1; then
+        record_progress "${event_prefix}_runtime_failure" control \
+          "$slot" '' '' ablation_guard "$run_id" runtime_failure \
+          "$run_dir" ''
+        echo "Falló el control $run_id; consulte $log" >&2
+        exit 1
+      fi
+    elif [[ ! -f $run_dir/run_metadata.csv ]]; then
+      record_progress "${event_prefix}_runtime_failure" control \
+        "$slot" '' '' ablation_guard "$run_id" runtime_failure \
+        "$run_dir" ''
+      echo "El control previo quedó incompleto: $run_dir" >&2
+      exit 1
+    fi
+
+    local audit_temporary="${audit_report}.tmp.$$"
+    if [[ -e $audit_temporary ]]; then
+      echo "Existe un informe temporal inesperado: $audit_temporary" >&2
+      exit 1
+    fi
+    set +e
+    python3 "$project_dir/analysis/analyze_ohead_ablation.py" \
+      --protocol "$protocol" --plan "$plan" --audit-clean-run "$run_dir" \
+      --run-id "$run_id" --audit-output "$audit_temporary" \
+      >>"$log" 2>&1
+    control_audit_rc=$?
+    set -e
+    if ! promote_audit_report "$audit_temporary" "$audit_report"; then
+      record_progress "${event_prefix}_audit_error" control "$slot" '' '' \
+        ablation_guard "$run_id" audit_error "$run_dir" ''
+      echo "El auditor no produjo el informe del control $slot" >&2
+      exit 1
+    fi
+    control_status=$(report_status "$audit_report")
+    if [[ $control_audit_rc -eq 0 && $control_status == valid_control ]]; then
+      record_progress "${event_prefix}_valid" control "$slot" '' '' \
+        ablation_guard "$run_id" valid "$run_dir" "$audit_report"
+      return
+    fi
+    record_progress "${event_prefix}_${control_status}" control "$slot" '' '' \
+      ablation_guard "$run_id" "$control_status" "$run_dir" "$audit_report"
+    echo "El control $slot exige diagnóstico: $audit_report" >&2
     exit 1
-  fi
-  local log="$logs/control_${run_id}.log"
-  if ! "$script_dir/run_ohead_ablation_experiment.sh" \
-      clean ablation_guard "$run_id" >"$log" 2>&1; then
-    record_progress "$event_id" control '' '' '' ablation_guard \
-      "$run_id" runtime_failure "$run_dir" ''
-    echo "Falló el control $run_id; consulte $log" >&2
-    exit 1
-  fi
-  record_progress "$event_id" control '' '' '' ablation_guard \
-    "$run_id" complete "$run_dir" ''
+  done
+  echo "El control $slot agotó diez intentos; se detiene la campaña" >&2
+  exit 1
 }
 
 slot_is_complete() {
