@@ -171,6 +171,20 @@ def validated_disposition(path: Path | None, allowed: str,
     return disposition
 
 
+def validated_control_disposition(
+        path: Path | None, protocol: dict,
+        expected: dict[str, object]) -> dict | None:
+    policy = protocol["control_failure_disposition_policy"]
+    disposition = validated_disposition(
+        path, policy["allowed_decision"], expected)
+    if disposition is None:
+        return None
+    allowed_impacts = set(policy["allowed_prior_interval_impact"])
+    if disposition.get("prior_interval_impact") not in allowed_impacts:
+        return None
+    return disposition
+
+
 def resolve_controller_crosscheck(
         arm: str, crosscheck_valid: bool, disposition_path: Path | None,
         protocol: dict, run_id: str) -> tuple[str, dict | None]:
@@ -972,20 +986,32 @@ def audit_clean_controls(results: Path, protocol: dict,
         if replacement_used:
             suffix = run_id.removeprefix(f"{slot}_r")
             replacement_attempt = int(suffix) if suffix.isdigit() else -1
-        expected_authorizations = {
-            f"control_{slot}_attempt_{attempt}_replacement_authorized"
-            for attempt in range(max(0, replacement_attempt))
-        }
         actual_authorizations = {
-            row["event_id"] for row in progress
+            row["event_id"]: row for row in progress
             if row["kind"] == "control"
             and row["plan_execution_order"] == slot
             and row["outcome"] == "replacement_authorized"
         }
+        validated_authorizations = []
+        for attempt in range(max(0, replacement_attempt)):
+            event_id = (
+                f"control_{slot}_attempt_{attempt}_replacement_authorized")
+            authorization = actual_authorizations.get(event_id)
+            expected_run_id = slot if attempt == 0 else f"{slot}_r{attempt}"
+            if authorization is None:
+                continue
+            disposition = validated_control_disposition(
+                Path(authorization["audit_report"]), protocol, {
+                    "control_slot": slot,
+                    "attempt": attempt,
+                    "run_id": expected_run_id,
+                })
+            if disposition is not None:
+                validated_authorizations.append(disposition)
         replacement_documented = (
             not replacement_used or (
                 replacement_attempt > 0
-                and expected_authorizations.issubset(actual_authorizations)
+                and len(validated_authorizations) == replacement_attempt
             )
         )
         record.update({
@@ -993,6 +1019,10 @@ def audit_clean_controls(results: Path, protocol: dict,
             "replacement_used": replacement_used,
             "replacement_attempt": replacement_attempt,
             "replacement_documented": replacement_documented,
+            "prior_interval_impacts": [
+                item["prior_interval_impact"]
+                for item in validated_authorizations
+            ],
         })
         record["valid"] = bool(record.get("valid")) and replacement_documented
         records.append(record)
@@ -1015,6 +1045,65 @@ def audit_clean_controls(results: Path, protocol: dict,
         "payload_bytes_read_cv": analyze.coefficient_of_variation(payload),
         "runs": records,
     }
+
+
+def affected_execution_orders(clean_controls: dict[str, object],
+                              protocol: dict) -> list[int]:
+    interval = int(protocol["clean_controls"]["after_each_completed_jobs"])
+    affected: set[int] = set()
+    for record in clean_controls["runs"]:  # type: ignore[union-attr]
+        slot = str(record.get("control_slot", ""))
+        impacts = record.get("prior_interval_impacts", [])
+        if "possible" not in impacts or not slot.startswith("mid_"):
+            continue
+        try:
+            end = int(slot.removeprefix("mid_"))
+        except ValueError:
+            continue
+        start = max(1, end - interval + 1)
+        affected.update(range(start, end + 1))
+    return sorted(affected)
+
+
+def host_interval_sensitivity(
+        groups: dict[str, list[dict[str, object]]],
+        affected_orders: list[int], protocol: dict) -> dict[str, object]:
+    if not affected_orders:
+        return {
+            "scope": "secondary", "status": "not_required",
+            "affected_execution_orders": [],
+        }
+    affected = set(affected_orders)
+    filtered = {
+        arm: [row for row in rows
+              if int(row["execution_order"]) not in affected]
+        for arm, rows in groups.items()
+    }
+    assistant = filtered["assistant"]
+    const10 = filtered["const10"]
+    iterations = int(protocol["bootstrap_iterations"])
+    seed = int(protocol["bootstrap_seed"]) + 30
+    result: dict[str, object] = {
+        "scope": "secondary",
+        "status": "reported",
+        "affected_execution_orders": affected_orders,
+        "remaining_runs_by_arm": {
+            arm: len(rows) for arm, rows in filtered.items()
+        },
+    }
+    if len(assistant) < 2 or len(const10) < 2:
+        result["comparison"] = None
+        result["reason"] = "insufficient_remaining_runs"
+        return result
+    result["comparison"] = comparison(
+        assistant, const10, iterations, seed)
+    result["welch_tost"] = welch_tost(
+        [float(row["metrics"]["U"]) for row in assistant],  # type: ignore[index]
+        [float(row["metrics"]["U"]) for row in const10],  # type: ignore[index]
+        float(protocol["equivalence_margin_U"]),
+        float(protocol["alpha"]),
+    )
+    return result
 
 
 def final_analysis(args: argparse.Namespace, protocol: dict,
@@ -1208,6 +1297,9 @@ def final_analysis(args: argparse.Namespace, protocol: dict,
 
     clean = audit_clean_controls(
         Path(args.results), protocol, protocol_hash, plan_hash, progress)
+    affected_orders = affected_execution_orders(clean, protocol)
+    interval_sensitivity = host_interval_sensitivity(
+        groups, affected_orders, protocol)
     commits = sorted({str(row["experiment_git_commit"]) for row in records})
     criteria = {
         "protocol_frozen": protocol.get("status") == "frozen_before_execution",
@@ -1234,6 +1326,7 @@ def final_analysis(args: argparse.Namespace, protocol: dict,
         "primary": primary,
         "secondary_descriptive": secondary,
         "behavior_sensitivity": behavior_sensitivity,
+        "host_interval_sensitivity": interval_sensitivity,
         "assistant_behavior": assistant_behavior,
         "assistant_equivalence_statuses": dict(equivalence_statuses),
         "arms": arm_summary,
@@ -1292,13 +1385,13 @@ def main() -> None:
         if not all((args.attempt, args.run_id)):
             parser.error("la disposición requiere intento y run-id")
         if args.control_slot:
-            allowed = protocol["control_failure_disposition_policy"][
-                "allowed_decision"]
             expected = {
                 "control_slot": args.control_slot,
                 "attempt": args.attempt,
                 "run_id": args.run_id,
             }
+            disposition = validated_control_disposition(
+                Path(args.validate_failure_disposition), protocol, expected)
         else:
             if not args.plan_execution_order:
                 parser.error("la disposición experimental requiere orden")
@@ -1308,8 +1401,8 @@ def main() -> None:
                 "attempt": args.attempt,
                 "run_id": args.run_id,
             }
-        disposition = validated_disposition(
-            Path(args.validate_failure_disposition), allowed, expected)
+            disposition = validated_disposition(
+                Path(args.validate_failure_disposition), allowed, expected)
         report = {
             "status": "valid_disposition" if disposition
                 else "invalid_disposition",

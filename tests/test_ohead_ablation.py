@@ -294,15 +294,16 @@ class OheadAblationAnalysisTests(unittest.TestCase):
                 "control_slot": "pre_1",
                 "attempt": 0,
                 "run_id": "pre_1",
+                "prior_interval_impact": "isolated",
                 "justification": "latencia anómala del host confirmada en el log",
             }))
-            accepted = analysis.validated_disposition(
-                path, "infrastructure_failure_replace", {
+            accepted = analysis.validated_control_disposition(
+                path, self.protocol, {
                     "control_slot": "pre_1", "attempt": 0,
                     "run_id": "pre_1",
                 })
-            rejected = analysis.validated_disposition(
-                path, "infrastructure_failure_replace", {
+            rejected = analysis.validated_control_disposition(
+                path, self.protocol, {
                     "control_slot": "pre_2", "attempt": 0,
                     "run_id": "pre_1",
                 })
@@ -319,39 +320,112 @@ class OheadAblationAnalysisTests(unittest.TestCase):
         self.assertEqual(len(slots), 14)
 
     def test_clean_control_replacement_requires_documentation(self) -> None:
-        slots = analysis.expected_control_slots(self.protocol)
-        progress = []
-        for slot in slots:
-            run_id = "pre_1_r1" if slot == "pre_1" else slot
-            progress.append({
-                "event_id": f"control_{slot}_attempt_0_valid",
-                "kind": "control", "outcome": "valid",
-                "plan_execution_order": slot, "run_id": run_id,
-                "run_dir": f"/runs/{run_id}",
-            })
+        with tempfile.TemporaryDirectory() as directory:
+            disposition = Path(directory) / "pre_1.json"
+            disposition.write_text(json.dumps({
+                "decision": "infrastructure_failure_replace",
+                "control_slot": "pre_1", "attempt": 0,
+                "run_id": "pre_1", "prior_interval_impact": "isolated",
+                "justification": "falla acotada al proceso del control",
+            }))
+            slots = analysis.expected_control_slots(self.protocol)
+            progress = []
+            for slot in slots:
+                run_id = "pre_1_r1" if slot == "pre_1" else slot
+                progress.append({
+                    "event_id": f"control_{slot}_attempt_0_valid",
+                    "kind": "control", "outcome": "valid",
+                    "plan_execution_order": slot, "run_id": run_id,
+                    "run_dir": f"/runs/{run_id}",
+                    "audit_report": "",
+                })
 
-        def valid_control(_path, _protocol, _protocol_hash, _plan_hash, run_id):
-            return {
-                "status": "valid_control", "valid": True,
-                "run_id": run_id, "byteSentUniqueTotal": 100.0,
-                "payload_bytes_read": 100.0,
-            }
+            def valid_control(
+                    _path, _protocol, _protocol_hash, _plan_hash, run_id):
+                return {
+                    "status": "valid_control", "valid": True,
+                    "run_id": run_id, "byteSentUniqueTotal": 100.0,
+                    "payload_bytes_read": 100.0,
+                }
 
-        with mock.patch.object(
-                analysis, "safe_audit_clean_control_run",
-                side_effect=valid_control):
-            rejected = analysis.audit_clean_controls(
-                Path("/results"), self.protocol, "protocol", "plan", progress)
-            progress.append({
-                "event_id": "control_pre_1_attempt_0_replacement_authorized",
-                "kind": "control", "outcome": "replacement_authorized",
-                "plan_execution_order": "pre_1", "run_id": "pre_1",
-                "run_dir": "/runs/pre_1",
-            })
-            accepted = analysis.audit_clean_controls(
-                Path("/results"), self.protocol, "protocol", "plan", progress)
+            with mock.patch.object(
+                    analysis, "safe_audit_clean_control_run",
+                    side_effect=valid_control):
+                rejected = analysis.audit_clean_controls(
+                    Path("/results"), self.protocol, "protocol", "plan",
+                    progress)
+                progress.append({
+                    "event_id":
+                        "control_pre_1_attempt_0_replacement_authorized",
+                    "kind": "control", "outcome": "replacement_authorized",
+                    "plan_execution_order": "pre_1", "run_id": "pre_1",
+                    "run_dir": "/runs/pre_1",
+                    "audit_report": str(disposition),
+                })
+                accepted = analysis.audit_clean_controls(
+                    Path("/results"), self.protocol, "protocol", "plan",
+                    progress)
         self.assertEqual(rejected["status"], "rejected")
         self.assertEqual(accepted["status"], "accepted")
+
+    def test_possible_mid_control_impact_selects_prior_interval(self) -> None:
+        clean = {
+            "runs": [
+                {
+                    "control_slot": "mid_100",
+                    "prior_interval_impacts": ["possible"],
+                },
+                {
+                    "control_slot": "mid_200",
+                    "prior_interval_impacts": ["isolated"],
+                },
+                {
+                    "control_slot": "pre_1",
+                    "prior_interval_impacts": ["possible"],
+                },
+            ]
+        }
+        affected = analysis.affected_execution_orders(clean, self.protocol)
+        self.assertEqual(affected, list(range(1, 101)))
+
+    def test_host_interval_sensitivity_is_secondary(self) -> None:
+        protocol = dict(self.protocol)
+        protocol["bootstrap_iterations"] = 100
+        groups = {
+            "assistant": [
+                {"execution_order": order, "metrics": {"U": value}}
+                for order, value in ((1, 0.991), (3, 0.992), (5, 0.993))
+            ],
+            "const10": [
+                {"execution_order": order, "metrics": {"U": value}}
+                for order, value in ((2, 0.990), (4, 0.991), (6, 0.992))
+            ],
+            "vanilla": [],
+            "oracle10": [],
+        }
+        report = analysis.host_interval_sensitivity(
+            groups, [1, 2], protocol)
+        self.assertEqual(report["scope"], "secondary")
+        self.assertEqual(report["status"], "reported")
+        self.assertEqual(report["remaining_runs_by_arm"]["assistant"], 2)
+        self.assertEqual(report["remaining_runs_by_arm"]["const10"], 2)
+        self.assertIn("comparison", report)
+
+    def test_invalid_control_impact_classification_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "disposition.json"
+            path.write_text(json.dumps({
+                "decision": "infrastructure_failure_replace",
+                "control_slot": "mid_100", "attempt": 0,
+                "run_id": "mid_100", "prior_interval_impact": "unknown",
+                "justification": "clasificación deliberadamente inválida",
+            }))
+            disposition = analysis.validated_control_disposition(
+                path, self.protocol, {
+                    "control_slot": "mid_100", "attempt": 0,
+                    "run_id": "mid_100",
+                })
+        self.assertIsNone(disposition)
 
     def test_missing_clean_control_files_are_rejected_immediately(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
