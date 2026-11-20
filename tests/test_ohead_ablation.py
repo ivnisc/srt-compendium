@@ -514,6 +514,38 @@ class OheadAblationAnalysisTests(unittest.TestCase):
         self.assertEqual(report["status"], "audit_error")
         self.assertEqual(report["error_type"], "RuntimeError")
 
+    def test_flatten_run_records_normalizes_optional_behavior_fields(self) -> None:
+        records = [
+            {
+                "execution_order": 1, "block": 1, "position": 1,
+                "arm": "vanilla", "variant": "ablation_vanilla25",
+                "run_id": 1, "run_dir": "/runs/vanilla/1",
+                "metrics": {"U": 0.99},
+                "behavior": {"protocol_conforming": True},
+                "equivalence_status": "not_applicable",
+            },
+            {
+                "execution_order": 2, "block": 1, "position": 2,
+                "arm": "assistant", "variant": "ablation_assistant",
+                "run_id": 1, "run_dir": "/runs/assistant/1",
+                "metrics": {"U": 0.991},
+                "behavior": {
+                    "protocol_conforming": True,
+                    "readiness_failure": False,
+                    "standard_cycle": True,
+                },
+                "equivalence_status": "equivalent",
+            },
+        ]
+        rows = analysis.flatten_run_records(records)
+        self.assertEqual(list(rows[0]), list(rows[1]))
+        self.assertIsNone(rows[0]["behavior_readiness_failure"])
+        self.assertTrue(rows[1]["behavior_standard_cycle"])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "runs.csv"
+            analysis.analyze.write_csv(path, rows)
+            self.assertEqual(len(analysis.read_csv(path)), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

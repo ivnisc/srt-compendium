@@ -1112,6 +1112,41 @@ def host_interval_sensitivity(
     return result
 
 
+def flatten_run_records(
+        records: Sequence[dict[str, object]]) -> list[dict[str, object]]:
+    """Construye filas con un esquema común para todos los brazos."""
+    identity_fields = (
+        "execution_order", "block", "position", "arm", "variant",
+        "run_id", "run_dir",
+    )
+    metric_fields = sorted({
+        key
+        for row in records
+        for key in row["metrics"]  # type: ignore[union-attr]
+    })
+    behavior_fields = sorted({
+        key
+        for row in records
+        for key in row["behavior"]  # type: ignore[union-attr]
+    })
+
+    flat_rows: list[dict[str, object]] = []
+    for row in records:
+        metrics = row["metrics"]  # type: ignore[assignment]
+        behavior = row["behavior"]  # type: ignore[assignment]
+        flat: dict[str, object] = {
+            key: row.get(key) for key in identity_fields
+        }
+        flat.update({key: metrics.get(key) for key in metric_fields})
+        flat.update({
+            f"behavior_{key}": behavior.get(key)
+            for key in behavior_fields
+        })
+        flat["equivalence_status"] = row.get("equivalence_status")
+        flat_rows.append(flat)
+    return flat_rows
+
+
 def final_analysis(args: argparse.Namespace, protocol: dict,
                    protocol_hash: str, plan_hash: str) -> dict[str, object]:
     plan = read_csv(Path(args.plan))
@@ -1345,18 +1380,7 @@ def final_analysis(args: argparse.Namespace, protocol: dict,
     }
     analyze.write_json(Path(args.output), report)
 
-    flat_rows = []
-    for row in records:
-        base = {key: row[key] for key in (
-            "execution_order", "block", "position", "arm", "variant",
-            "run_id", "run_dir")}
-        base.update(row["metrics"])  # type: ignore[arg-type]
-        base.update({
-            f"behavior_{key}": value
-            for key, value in row["behavior"].items()  # type: ignore[union-attr]
-        })
-        base["equivalence_status"] = row["equivalence_status"]
-        flat_rows.append(base)
+    flat_rows = flatten_run_records(records)
     analyze.write_csv(Path(args.runs_csv), flat_rows)
     return report
 
